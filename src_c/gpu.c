@@ -50,15 +50,17 @@ static PyTypeObject pgSampler_Type;
     }
 #define DEC_CONST(x) DEC_CONSTS_(#x, SDL_##x)
 
-static void
+static int
 acquire_command_buffer()
 {
     if (cmdbuf == NULL) {
         cmdbuf = SDL_AcquireGPUCommandBuffer(device);
         if (cmdbuf == NULL) {
             RAISE(pgExc_SDLError, SDL_GetError());
+            return 0;
         }
     }
+    return 1;
 }
 
 /* Shader implementation */
@@ -84,6 +86,7 @@ shader_init(pgShaderObject *self, PyObject *args, PyObject *kwargs)
     size_t code_size = SDL_GetIOSize(rw);
     Uint8 *code = (Uint8 *)malloc(code_size);
     SDL_ReadIO(rw, code, code_size);
+    SDL_CloseIO(rw);
 
     SDL_GPUShaderFormat backendFormats = SDL_GetGPUShaderFormats(device);
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
@@ -98,6 +101,7 @@ shader_init(pgShaderObject *self, PyObject *args, PyObject *kwargs)
 		format = SDL_GPU_SHADERFORMAT_DXIL;
 		entrypoint = "main";
 	} else {
+        free(code);
         RAISERETURN(pgExc_SDLError, "Unrecognized backend shader format!", -1);
 	}
 	SDL_GPUShaderCreateInfo shaderInfo = {
@@ -112,12 +116,12 @@ shader_init(pgShaderObject *self, PyObject *args, PyObject *kwargs)
 		.num_storage_textures = storage_textures
 	};
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &shaderInfo);
+    free(code);
     if (shader == NULL) {
         PyErr_SetString(pgExc_SDLError, SDL_GetError());
         return -1;
     }
     self->shader = shader;
-    free(code);
     return 0;
 }
 
@@ -144,7 +148,9 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     if (active_render_passes) {
         return RAISE(pgExc_SDLError, "You must end old render pass before starting new one");
     }
-    acquire_command_buffer();
+    if (!acquire_command_buffer()) {
+        return NULL;
+    }
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmdbuf, window->_win, &swapchainTexture, NULL, NULL)) {
         return RAISE(pgExc_SDLError, SDL_GetError());
     }
@@ -381,7 +387,9 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
 
     free((void*)self->pipeline_info.vertex_input_state.vertex_buffer_descriptions);
     free((void*)self->pipeline_info.vertex_input_state.vertex_attributes);
-    free((void*)self->pipeline_info.target_info.color_target_descriptions);
+    if (src_color_blendfactor || src_alpha_blendfactor || dst_color_blendfactor || dst_alpha_blendfactor) {
+        free((void*)self->pipeline_info.target_info.color_target_descriptions);
+    }
     if (self->pipeline == NULL) {
         RAISERETURN(pgExc_SDLError, SDL_GetError(), -1);
     }
@@ -803,7 +811,7 @@ push_data(PyObject *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
     if (PyObject_GetBuffer(structure_obj, &view, PyBUF_SIMPLE) != 0) {
-        RAISE(pgExc_SDLError, "Expected a ctypes Structure object");
+        return RAISE(pgExc_SDLError, "Expected a ctypes Structure object");
     }
     switch (data_type) {
         case PUSH_VERTEX:
@@ -1125,4 +1133,4 @@ MODINIT_DEFINE(gpu)
     }
 
     return module;
-}
+}
