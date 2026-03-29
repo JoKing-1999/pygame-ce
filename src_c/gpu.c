@@ -138,12 +138,18 @@ shader_dealloc(pgShaderObject *self, PyObject *_null)
 static PyObject *
 render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
 {
-    pgWindowObject *window;
-    SDL_GPUTexture* swapchainTexture;
-    char *keywords[] = {"window", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,
-                                     &pgWindow_Type, &window)) {
+    pgWindowObject *window = NULL;
+    pgGPUTextureObject *texture = NULL;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+    Uint32 layer = 0;                                                                                                                                                                                                                                                                                                  
+    int cycle = 0;
+    SDL_GPUTexture* swapchainTexture;                                                                                                                                                                                                                                                                                                  
+    char *keywords[] = {"window", "texture", "layer", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ip", keywords,
+                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle)) {
         return NULL;
+    }
+    if (window == NULL && texture == NULL) {                                                                                                                                                                                                                                                                        
+        return RAISE(pgExc_SDLError, "Must provide either window or texture");                                                                                                                                                                                                                                      
     }
     if (active_render_passes) {
         return RAISE(pgExc_SDLError, "You must end old render pass before starting new one");
@@ -151,14 +157,25 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     if (!acquire_command_buffer()) {
         return NULL;
     }
-    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmdbuf, window->_win, &swapchainTexture, NULL, NULL)) {
-        return RAISE(pgExc_SDLError, SDL_GetError());
-    }
-    if (swapchainTexture != NULL) {
-        self->color_info.texture = swapchainTexture;
+    if (texture != NULL) {
+        self->color_info.texture = texture->texture;
+        self->color_info.layer_or_depth_plane = layer;
+        self->color_info.cycle = cycle;
         if (self->render_pass == NULL) {
             self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, NULL);
             active_render_passes++;
+        }
+    }
+    else {
+        if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmdbuf, window->_win, &swapchainTexture, NULL, NULL)) {
+            return RAISE(pgExc_SDLError, SDL_GetError());
+        }
+        if (swapchainTexture != NULL) {
+            self->color_info.texture = swapchainTexture;
+            if (self->render_pass == NULL) {
+                self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, NULL);
+                active_render_passes++;
+            }
         }
     }
     Py_RETURN_NONE;
@@ -680,20 +697,22 @@ texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUTextureType texture_type;
     SDL_GPUTextureUsageFlags usage;
     int width, height;
+    SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;                                                                                                                                                                                                                                                              
+    Uint32 depth = 1;
     PyObject *sizeobj = NULL;
-    char *keywords[] = {"size", "texture_type", "usage", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii", keywords,
-                                     &sizeobj, &texture_type, &usage)) {
+    char *keywords[] = {"size", "texture_type", "usage", "format", "depth", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|ii", keywords,                                                                                                                                                                                                                                              
+                                     &sizeobj, &texture_type, &usage, &format, &depth)) {
         return -1;
     }
     if (!pg_TwoIntsFromObj(sizeobj, &width, &height)) {
         RAISERETURN(PyExc_TypeError, "invalid size argument", -1)
     }
     self->texture_info.type = texture_type;
-    self->texture_info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    self->texture_info.format = format;
     self->texture_info.width = width;
     self->texture_info.height = height;
-    self->texture_info.layer_count_or_depth = 1;
+    self->texture_info.layer_count_or_depth = depth;
     self->texture_info.num_levels = 1;
     self->texture_info.usage = usage;
     texture = SDL_CreateGPUTexture(device, &self->texture_info);
@@ -703,13 +722,14 @@ texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     self->texture = texture;
     self->width = width;
     self->height = height;
+    self->is_swapchain = 0;
     return 0;
 }
 
 static void
 texture_dealloc(pgGPUTextureObject *self, PyObject *_null)
 {
-    if (device != NULL && self->texture) {
+    if (device != NULL && self->texture && !self->is_swapchain) {
         SDL_ReleaseGPUTexture(device, self->texture);
     }
     Py_TYPE(self)->tp_free(self);
@@ -798,6 +818,90 @@ claim_window(PyObject *self, PyObject *args, PyObject *kwargs)
         return RAISE(pgExc_SDLError, SDL_GetError());
     }
     Py_RETURN_NONE;
+}
+
+static PyObject *
+get_swapchain_format(PyObject *self, PyObject *args, PyObject *kwargs)                                                                                                                                                                                                                                              
+{                                                                                                                                                                                                                                                                                                                   
+    pgWindowObject *window;                                                                                                                                                                                                                                                                                         
+    char *keywords[] = {"window", NULL};                                                                                                                                                                                                                                                                            
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,                                                                                                                                                                                                                                                  
+                                     &pgWindow_Type, &window)) {                                                                                                                                                                                                                                                    
+        return NULL;                                                                                                                                                                                                                                                                                                
+    }                                                                                                                                                                                                                                                                                                               
+    return PyLong_FromLong((long)SDL_GetGPUSwapchainTextureFormat(device, window->_win));                                                                                                                                                                                                                           
+}
+
+static PyObject *
+acquire_swapchain_texture(PyObject *self, PyObject *args, PyObject *kwargs)                                                                                                                                                                                                                                         
+{                                                                                                                                                                                                                                                                                                                   
+    pgWindowObject *window;                                                                                                                                                                                                                                                                                         
+    Uint32 w, h;                                                                                                                                                                                                                                                                                                    
+    char *keywords[] = {"window", NULL};                                                                                                                                                                                                                                                                            
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,                                                                                                                                                                                                                                                  
+                                     &pgWindow_Type, &window)) {                                                                                                                                                                                                                                                    
+        return NULL;                                                                                                                                                                                                                                                                                                
+    }                                                                                                                                                                                                                                                                                                               
+    if (!acquire_command_buffer()) {                                                                                                                                                                                                                                                                                
+        return NULL;                                                                                                                                                                                                                                                                                                
+    }                                                                                                                                                                                                                                                                                                               
+    SDL_GPUTexture *tex;                                                                                                                                                                                                                                                                                            
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmdbuf, window->_win, &tex, &w, &h)) {                                                                                                                                                                                                                               
+        return RAISE(pgExc_SDLError, SDL_GetError());                                                                                                                                                                                                                                                               
+    }                                                                                                                                                                                                                                                                                                               
+    if (tex == NULL) {                                                                                                                                                                                                                                                                                              
+         Py_RETURN_NONE;                                                                                                                                                                                                                                                                                             
+    }                                                                                                                                                                                                                                                                                                               
+    pgGPUTextureObject *texture = PyObject_New(pgGPUTextureObject, &pgGPUTexture_Type);                                                                                                                                                                                                                                 
+    texture->texture = tex;                                                                                                                                                                                                                                                                                             
+    texture->width = w;                                                                                                                                                                                                                                                                                                 
+    texture->height = h;                                                                                                                                                                                                                                                                                                
+    texture->is_swapchain = 1;
+    return (PyObject *)texture;                                                                                                                                                                                                                                                                                         
+}
+
+static PyObject *
+blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)                                                                                                                                                                                                                                                      
+{                                                                                                                                                                                                                                                                                                                   
+    pgGPUTextureObject *source, *dest;                                                                                                                                                                                                                                                                              
+    int source_w, source_h, dest_w, dest_h;                                                                                                                                                                                                                                                                         
+    int source_layer = 0, source_x = 0, source_y = 0;                                                                                                                                                                                                                                                               
+    int dest_x = 0, dest_y = 0;                                                                                                                                                                                                                                                                                     
+    int load_op = SDL_GPU_LOADOP_LOAD;                                                                                                                                                                                                                                                                              
+    int filter = SDL_GPU_FILTER_NEAREST;                                                                                                                                                                                                                                                                            
+    char *keywords[] = {                                                                                                                                                                                                                                                                                            
+        "source", "source_w", "source_h",                                                                                                                                                                                                                                                                           
+        "dest", "dest_w", "dest_h",                                                                                                                                                                                                                                                                                 
+        "source_layer", "source_x", "source_y",                                                                                                                                                                                                                                                                     
+        "dest_x", "dest_y",                                                                                                                                                                                                                                                                                         
+        "load_op", "filter", NULL                                                                                                                                                                                                                                                                                   
+    };                                                                                                                                                                                                                                                                                                              
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiii", keywords,                                                                                                                                                                                                                                    
+                                     &pgGPUTexture_Type, &source,                                                                                                                                                                                                                                                   
+                                     &source_w, &source_h,                                                                                                                                                                                                                                                          
+                                     &pgGPUTexture_Type, &dest,                                                                                                                                                                                                                                                     
+                                     &dest_w, &dest_h,                                                                                                                                                                                                                                                              
+                                     &source_layer, &source_x, &source_y,                                                                                                                                                                                                                                           
+                                     &dest_x, &dest_y,                                                                                                                                                                                                                                                              
+                                     &load_op, &filter)) {                                                                                                                                                                                                                                                          
+        return NULL;                                                                                                                                                                                                                                                                                                
+    }                                                                                                                                                                                                                                                                                                               
+    SDL_BlitGPUTexture(cmdbuf, &(SDL_GPUBlitInfo){                                                                                                                                                                                                                                                                  
+        .source.texture = source->texture,                                                                                                                                                                                                                                                                          
+        .source.layer_or_depth_plane = source_layer,                                                                                                                                                                                                                                                                
+        .source.x = source_x,                                                                                                                                                                                                                                                                                       
+        .source.y = source_y,                                                                                                                                                                                                                                                                                       
+        .source.w = source_w,                                                                                                                                                                                                                                                                                       
+        .source.h = source_h,                                                                                                                                                                                                                                                                                       
+        .destination.texture = dest->texture,                                                                                                                                                                                                                                                                       
+        .destination.x = dest_x,                                                                                                                                                                                                                                                                                    
+        .destination.y = dest_y,                                                                                                                                                                                                                                                                                    
+        .destination.w = dest_w,                                                                                                                                                                                                                                                                                    
+        .destination.h = dest_h,                                                                                                                                                                                                                                                                                    
+        .load_op = load_op,                                                                                                                                                                                                                                                                                         
+        .filter = filter                                                                                                                                                                                                                                                                                            
+    });                                                                                                                                                                                                                                                                                                             
+    Py_RETURN_NONE;                                                                                                                                                                                                                                                                                                 
 }
 
 static PyObject *
@@ -974,6 +1078,9 @@ static PyTypeObject pgSampler_Type = {
 static PyMethodDef gpu_methods[] = {
     {"init", (PyCFunction)init, METH_NOARGS, NULL},
     {"claim_window", (PyCFunction)claim_window, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"get_swapchain_format", (PyCFunction)get_swapchain_format, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"acquire_swapchain_texture", (PyCFunction)acquire_swapchain_texture, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"blit_texture", (PyCFunction)blit_texture, METH_VARARGS | METH_KEYWORDS, NULL},
     {"push_data", (PyCFunction)push_data, METH_VARARGS | METH_KEYWORDS, NULL},
     {"submit", (PyCFunction)submit, METH_NOARGS, NULL},
     {"quit", (PyCFunction)quit, METH_NOARGS, NULL},

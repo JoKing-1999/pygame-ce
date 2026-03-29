@@ -622,6 +622,7 @@ typedef struct {
     PyObject_HEAD SDL_GPUTexture *texture;
     int width;
     int height;
+    int is_swapchain;  // 0 = swapchain (don't release), 1 = user-created
     SDL_GPUTextureCreateInfo texture_info;
 } pgGPUTextureObject;
 
