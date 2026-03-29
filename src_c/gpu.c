@@ -307,8 +307,6 @@ pipeline_fill_vertex_input_state(pgPipelineObject *self, BufferType vertex_input
             .vertex_attributes = vertex_attribute
         };
     }
-    free(buffer_description);
-    free(vertex_attribute);
 }
 
 static void
@@ -316,7 +314,7 @@ pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GP
 {
     SDL_GPUColorTargetDescription *color_target_descriptions = NULL;
     if (src_color_blendfactor || src_alpha_blendfactor || dst_color_blendfactor || dst_alpha_blendfactor) {
-        color_target_descriptions = (SDL_GPUColorTargetDescription *)malloc(sizeof(SDL_GPUColorTargetDescription));
+        color_target_descriptions = (SDL_GPUColorTargetDescription *)calloc(1, sizeof(SDL_GPUColorTargetDescription));
         color_target_descriptions->format = SDL_GetGPUSwapchainTextureFormat(device, window->_win);
         color_target_descriptions->blend_state.enable_blend = true;
         color_target_descriptions->blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -337,9 +335,6 @@ pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GP
                 .format = SDL_GetGPUSwapchainTextureFormat(device, window->_win)
             }},
         };
-    }
-    if (color_target_descriptions != NULL) {
-        free(color_target_descriptions);
     }
 }
 
@@ -383,6 +378,10 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
         pipeline_fill_vertex_input_state(self, vertex_input_state);
     }
     self->pipeline = SDL_CreateGPUGraphicsPipeline(device, &self->pipeline_info);
+
+    free((void*)self->pipeline_info.vertex_input_state.vertex_buffer_descriptions);
+    free((void*)self->pipeline_info.vertex_input_state.vertex_attributes);
+    free((void*)self->pipeline_info.target_info.color_target_descriptions);
     if (self->pipeline == NULL) {
         RAISERETURN(pgExc_SDLError, SDL_GetError(), -1);
     }
@@ -430,13 +429,23 @@ buffer_upload_position_color_vertex(pgBufferObject *self, PyObject* data, int si
     PositionColorVertex* transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
     for (int i = 0; i < self->no_of_elements; i++) {
         PyObject* inner_data_obj = PySequence_GetItem(data, i);
-        transfer_data[i].x = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 0));
-        transfer_data[i].y = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 1));
-        transfer_data[i].z = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 2));
-        transfer_data[i].r = (Uint8)PyLong_AsInt(PySequence_GetItem(inner_data_obj, 3));
-        transfer_data[i].g = (Uint8)PyLong_AsInt(PySequence_GetItem(inner_data_obj, 4));
-        transfer_data[i].b = (Uint8)PyLong_AsInt(PySequence_GetItem(inner_data_obj, 5));
-        transfer_data[i].a = (Uint8)PyLong_AsInt(PySequence_GetItem(inner_data_obj, 6));
+        PyObject *v0 = PySequence_GetItem(inner_data_obj, 0);
+        PyObject *v1 = PySequence_GetItem(inner_data_obj, 1);
+        PyObject *v2 = PySequence_GetItem(inner_data_obj, 2);
+        PyObject *v3 = PySequence_GetItem(inner_data_obj, 3);
+        PyObject *v4 = PySequence_GetItem(inner_data_obj, 4);
+        PyObject *v5 = PySequence_GetItem(inner_data_obj, 5);
+        PyObject *v6 = PySequence_GetItem(inner_data_obj, 6);
+        transfer_data[i].x = (float)PyFloat_AsDouble(v0);
+        transfer_data[i].y = (float)PyFloat_AsDouble(v1);
+        transfer_data[i].z = (float)PyFloat_AsDouble(v2);
+        transfer_data[i].r = (Uint8)PyLong_AsInt(v3);
+        transfer_data[i].g = (Uint8)PyLong_AsInt(v4);
+        transfer_data[i].b = (Uint8)PyLong_AsInt(v5);
+        transfer_data[i].a = (Uint8)PyLong_AsInt(v6);
+        Py_DECREF(v0); Py_DECREF(v1); Py_DECREF(v2);
+        Py_DECREF(v3); Py_DECREF(v4); Py_DECREF(v5); Py_DECREF(v6);
+        Py_DECREF(inner_data_obj);
     }
     SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
     return transfer_buffer;
@@ -452,11 +461,19 @@ buffer_upload_position_texture_vertex(pgBufferObject *self, PyObject* data, int 
     PositionTextureVertex* transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
     for (int i = 0; i < self->no_of_elements; i++) {
         PyObject* inner_data_obj = PySequence_GetItem(data, i);
-        transfer_data[i].x = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 0));
-        transfer_data[i].y = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 1));
-        transfer_data[i].z = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 2));
-        transfer_data[i].u = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 3));
-        transfer_data[i].v = (float)PyFloat_AsDouble(PySequence_GetItem(inner_data_obj, 4));
+        PyObject *v0 = PySequence_GetItem(inner_data_obj, 0);
+        PyObject *v1 = PySequence_GetItem(inner_data_obj, 1);
+        PyObject *v2 = PySequence_GetItem(inner_data_obj, 2);
+        PyObject *v3 = PySequence_GetItem(inner_data_obj, 3);
+        PyObject *v4 = PySequence_GetItem(inner_data_obj, 4);
+        transfer_data[i].x = (float)PyFloat_AsDouble(v0);
+        transfer_data[i].y = (float)PyFloat_AsDouble(v1);
+        transfer_data[i].z = (float)PyFloat_AsDouble(v2);
+        transfer_data[i].u = (float)PyFloat_AsDouble(v3);
+        transfer_data[i].v = (float)PyFloat_AsDouble(v4);
+        Py_DECREF(v0); Py_DECREF(v1); Py_DECREF(v2);
+        Py_DECREF(v3); Py_DECREF(v4);
+        Py_DECREF(inner_data_obj);
     }
     SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
     return transfer_buffer;
@@ -471,7 +488,9 @@ buffer_upload_index(pgBufferObject *self, PyObject* data, int size)
     });
     Uint16* transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
     for (int i = 0; i < self->no_of_elements; i++) {
-        transfer_data[i] = (Uint16)PyLong_AsInt(PySequence_GetItem(data, i));
+        PyObject *item = PySequence_GetItem(data, i);
+        transfer_data[i] = (Uint16)PyLong_AsInt(item);
+        Py_DECREF(item);
     }
     SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
     return transfer_buffer;
@@ -751,7 +770,7 @@ init(PyObject *self, PyObject *args, PyObject *kwargs)
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_InitSubSystem(SDL_INIT_VIDEO);
     }
-    device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_MSL, false, NULL);
+    device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);  // TODO: Reintroduce other backend formats
     if (device == NULL) {
         return RAISE(pgExc_SDLError, SDL_GetError());
     }
@@ -797,6 +816,7 @@ push_data(PyObject *self, PyObject *args, PyObject *kwargs)
             SDL_PushGPUComputeUniformData(cmdbuf, 0, view.buf, (Uint32)view.len);
             break;
     }
+    PyBuffer_Release(&view);
     Py_RETURN_NONE;
 }
 
@@ -1105,4 +1125,4 @@ MODINIT_DEFINE(gpu)
     }
 
     return module;
-}
+}
