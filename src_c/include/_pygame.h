@@ -645,6 +645,14 @@ typedef struct {
     SDL_GPUSamplerCreateInfo sampler_info;
 } pgSamplerObject;
 
+typedef struct {
+    PyObject_HEAD SDL_GPUComputePipeline *pipeline;
+} pgComputePipelineObject;
+
+typedef struct {
+    PyObject_HEAD SDL_GPUComputePass *compute_pass;
+} pgComputePassObject;
+
 #ifndef PYGAMEAPI_GPU_INTERNAL
 #define import_pygame_gpu() IMPORT_PYGAME_MODULE(gpu)
 #endif

@@ -24,6 +24,10 @@ static PyTypeObject pgGPUTexture_Type;
 
 static PyTypeObject pgSampler_Type;
 
+static PyTypeObject pgComputePipeline_Type;
+
+static PyTypeObject pgComputePass_Type;
+
 #define pgShader_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgShader_Type))
 
@@ -41,6 +45,12 @@ static PyTypeObject pgSampler_Type;
 
 #define pgSampler_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgSampler_Type))
+
+#define pgComputePipeline_Check(x) \
+    (PyObject_IsInstance((x), (PyObject *)&pgComputePipeline_Type))
+
+#define pgComputePass_Check(x) \
+    (PyObject_IsInstance((x), (PyObject *)&pgComputePass_Type))
 
 #define DEC_CONSTS_(x, y)                           \
     if (PyModule_AddIntConstant(module, x, (int)y)) \
@@ -791,6 +801,196 @@ sampler_dealloc(pgSamplerObject *self, PyObject *_null)
     Py_TYPE(self)->tp_free(self);
 }
 
+/* ComputePipeline implementation */
+static int
+compute_pipeline_init(pgComputePipelineObject *self, PyObject *args, PyObject *kwargs)
+{
+    PyObject *file;
+    SDL_RWops *rw = NULL;
+    int readwrite_storage_textures = 0, readwrite_storage_buffers = 0;
+    int readonly_storage_textures = 0, readonly_storage_buffers = 0;
+    int uniform_buffers = 0;
+    int threadcount_x, threadcount_y, threadcount_z;
+    char *keywords[] = {"file", "threadcount_x", "threadcount_y", "threadcount_z",
+                        "readwrite_storage_textures", "readwrite_storage_buffers",
+                        "readonly_storage_textures", "readonly_storage_buffers",
+                        "uniform_buffers", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oiii|iiiii", keywords,
+                                     &file, &threadcount_x, &threadcount_y, &threadcount_z,
+                                     &readwrite_storage_textures, &readwrite_storage_buffers,
+                                     &readonly_storage_textures, &readonly_storage_buffers,
+                                     &uniform_buffers)) {
+        return -1;
+    }
+    if (device == NULL) {
+        RAISERETURN(pgExc_SDLError, "gpu module hasn't been initialized!", -1)
+    }
+    rw = pgRWops_FromObject(file, NULL);
+    if (rw == NULL) {
+        RAISERETURN(pgExc_SDLError, "Unable to read file", -1);
+    }
+    size_t code_size = SDL_GetIOSize(rw);
+    Uint8 *code = (Uint8 *)malloc(code_size);
+    SDL_ReadIO(rw, code, code_size);
+    SDL_CloseIO(rw);
+
+    SDL_GPUShaderFormat backendFormats = SDL_GetGPUShaderFormats(device);
+    SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
+    const char *entrypoint;
+    if (backendFormats & SDL_GPU_SHADERFORMAT_SPIRV) {
+        format = SDL_GPU_SHADERFORMAT_SPIRV;
+        entrypoint = "main";
+    } else if (backendFormats & SDL_GPU_SHADERFORMAT_MSL) {
+        format = SDL_GPU_SHADERFORMAT_MSL;
+        entrypoint = "main0";
+    } else if (backendFormats & SDL_GPU_SHADERFORMAT_DXIL) {
+        format = SDL_GPU_SHADERFORMAT_DXIL;
+        entrypoint = "main";
+    } else {
+        free(code);
+        RAISERETURN(pgExc_SDLError, "Unrecognized backend shader format!", -1);
+    }
+    SDL_GPUComputePipelineCreateInfo info = {
+        .code = code,
+        .code_size = code_size,
+        .entrypoint = entrypoint,
+        .format = format,
+        .num_readwrite_storage_textures = readwrite_storage_textures,
+        .num_readwrite_storage_buffers = readwrite_storage_buffers,
+        .num_readonly_storage_textures = readonly_storage_textures,
+        .num_readonly_storage_buffers = readonly_storage_buffers,
+        .num_uniform_buffers = uniform_buffers,
+        .threadcount_x = threadcount_x,
+        .threadcount_y = threadcount_y,
+        .threadcount_z = threadcount_z,
+    };
+    self->pipeline = SDL_CreateGPUComputePipeline(device, &info);
+    free(code);
+    if (self->pipeline == NULL) {
+        PyErr_SetString(pgExc_SDLError, SDL_GetError());
+        return -1;
+    }
+    return 0;
+}
+
+static void
+compute_pipeline_dealloc(pgComputePipelineObject *self, PyObject *_null)
+{
+    if (device != NULL && self->pipeline) {
+        SDL_ReleaseGPUComputePipeline(device, self->pipeline);
+    }
+    Py_TYPE(self)->tp_free(self);
+}
+
+/* ComputePass implementation */
+static PyObject *
+compute_pass_begin(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
+{
+    PyObject *storage_textures = NULL;
+    PyObject *storage_buffers = NULL;
+    int cycle = 0;
+    char *keywords[] = {"storage_textures", "storage_buffers", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|OOp", keywords,
+                                     &storage_textures, &storage_buffers, &cycle)) {
+        return NULL;
+    }
+    if (!acquire_command_buffer()) {
+        return NULL;
+    }
+    Uint32 num_textures = 0;
+    SDL_GPUStorageTextureReadWriteBinding *tex_bindings = NULL;
+    if (storage_textures != NULL && storage_textures != Py_None) {
+        num_textures = (Uint32)PySequence_Length(storage_textures);
+        tex_bindings = (SDL_GPUStorageTextureReadWriteBinding *)calloc(
+            num_textures, sizeof(SDL_GPUStorageTextureReadWriteBinding));
+        for (Uint32 i = 0; i < num_textures; i++) {
+            PyObject *item = PySequence_GetItem(storage_textures, i);
+            if (!pgGPUTexture_Check(item)) {
+                Py_DECREF(item);
+                free(tex_bindings);
+                return RAISE(PyExc_TypeError, "storage_textures must contain Texture objects");
+            }
+            tex_bindings[i].texture = ((pgGPUTextureObject *)item)->texture;
+            tex_bindings[i].cycle = cycle;
+            Py_DECREF(item);
+        }
+    }
+    Uint32 num_buffers = 0;
+    SDL_GPUStorageBufferReadWriteBinding *buf_bindings = NULL;
+    if (storage_buffers != NULL && storage_buffers != Py_None) {
+        num_buffers = (Uint32)PySequence_Length(storage_buffers);
+        buf_bindings = (SDL_GPUStorageBufferReadWriteBinding *)calloc(
+            num_buffers, sizeof(SDL_GPUStorageBufferReadWriteBinding));
+        for (Uint32 i = 0; i < num_buffers; i++) {
+            PyObject *item = PySequence_GetItem(storage_buffers, i);
+            if (!pgBuffer_Check(item)) {
+                Py_DECREF(item);
+                free(tex_bindings);
+                free(buf_bindings);
+                return RAISE(PyExc_TypeError, "storage_buffers must contain Buffer objects");
+            }
+            buf_bindings[i].buffer = ((pgBufferObject *)item)->buffer;
+            Py_DECREF(item);
+        }
+    }
+    self->compute_pass = SDL_BeginGPUComputePass(
+        cmdbuf, tex_bindings, num_textures, buf_bindings, num_buffers);
+    free(tex_bindings);
+    free(buf_bindings);
+    if (self->compute_pass == NULL) {
+        return RAISE(pgExc_SDLError, SDL_GetError());
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+compute_pass_bind(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgComputePipelineObject *pipeline;
+    char *keywords[] = {"compute_pipeline", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,
+                                     &pgComputePipeline_Type, &pipeline)) {
+        return NULL;
+    }
+    SDL_BindGPUComputePipeline(self->compute_pass, pipeline->pipeline);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+compute_pass_dispatch(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
+{
+    Uint32 x, y, z;
+    char *keywords[] = {"x", "y", "z", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "III", keywords, &x, &y, &z)) {
+        return NULL;
+    }
+    SDL_DispatchGPUCompute(self->compute_pass, x, y, z);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+compute_pass_end(pgComputePassObject *self, PyObject *_null)
+{
+    if (self->compute_pass != NULL) {
+        SDL_EndGPUComputePass(self->compute_pass);
+        self->compute_pass = NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static int
+compute_pass_init(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
+{
+    self->compute_pass = NULL;
+    return 0;
+}
+
+static void
+compute_pass_dealloc(pgComputePassObject *self, PyObject *_null)
+{
+    Py_TYPE(self)->tp_free(self);
+}
+
 /* GPU Functions */
 static PyObject *
 init(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -1009,6 +1209,24 @@ static PyMethodDef sampler_methods[] = {
 
 static PyGetSetDef sampler_getset[] = {{NULL, 0, NULL, NULL, NULL}};
 
+static PyMethodDef compute_pipeline_methods[] = {{NULL, NULL, 0, NULL}};
+
+static PyGetSetDef compute_pipeline_getset[] = {{NULL, 0, NULL, NULL, NULL}};
+
+static PyMethodDef compute_pass_methods[] = {
+    {"begin", (PyCFunction)compute_pass_begin,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"bind", (PyCFunction)compute_pass_bind,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"dispatch", (PyCFunction)compute_pass_dispatch,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"end", (PyCFunction)compute_pass_end,
+     METH_NOARGS, NULL},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyGetSetDef compute_pass_getset[] = {{NULL, 0, NULL, NULL, NULL}};
+
 static PyTypeObject pgShader_Type = {
     PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.Shader",
     .tp_basicsize = sizeof(pgShaderObject),
@@ -1073,6 +1291,26 @@ static PyTypeObject pgSampler_Type = {
     .tp_init = (initproc)sampler_init,
     .tp_new = PyType_GenericNew,
     .tp_getset = sampler_getset
+};
+
+static PyTypeObject pgComputePipeline_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.ComputePipeline",
+    .tp_basicsize = sizeof(pgComputePipelineObject),
+    .tp_dealloc = (destructor)compute_pipeline_dealloc,
+    .tp_methods = compute_pipeline_methods,
+    .tp_init = (initproc)compute_pipeline_init,
+    .tp_new = PyType_GenericNew,
+    .tp_getset = compute_pipeline_getset
+};
+
+static PyTypeObject pgComputePass_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.ComputePass",
+    .tp_basicsize = sizeof(pgComputePassObject),
+    .tp_dealloc = (destructor)compute_pass_dealloc,
+    .tp_methods = compute_pass_methods,
+    .tp_init = (initproc)compute_pass_init,
+    .tp_new = PyType_GenericNew,
+    .tp_getset = compute_pass_getset
 };
 
 static PyMethodDef gpu_methods[] = {
@@ -1166,6 +1404,16 @@ MODINIT_DEFINE(gpu)
         return NULL;
     }
 
+    if (PyModule_AddType(module, &pgComputePipeline_Type)) {
+        Py_XDECREF(module);
+        return NULL;
+    }
+
+    if (PyModule_AddType(module, &pgComputePass_Type)) {
+        Py_XDECREF(module);
+        return NULL;
+    }
+
     DEC_CONST(GPU_SHADERSTAGE_VERTEX);
     DEC_CONST(GPU_SHADERSTAGE_FRAGMENT);
     DEC_CONST(GPU_LOADOP_LOAD);
@@ -1212,6 +1460,8 @@ MODINIT_DEFINE(gpu)
     DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ);
     DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
     DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE);
+    DEC_CONST(GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
+    DEC_CONST(GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
     DEC_CONST(GPU_BLENDFACTOR_ZERO);
     DEC_CONST(GPU_BLENDFACTOR_ONE);
     DEC_CONST(GPU_BLENDFACTOR_SRC_COLOR);

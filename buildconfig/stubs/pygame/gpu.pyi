@@ -2,7 +2,7 @@ from typing import Any, Iterable
 from ctypes import Structure
 from pygame.surface import Surface
 from pygame.window import Window
-from pygame.typing import ColorLike, RectLike
+from pygame.typing import ColorLike, RectLike, FileLike
 
 GPU_SHADERSTAGE_VERTEX: int
 GPU_SHADERSTAGE_FRAGMENT: int
@@ -50,6 +50,8 @@ GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ: int
 GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ: int
 GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE: int
 GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE: int
+GPU_TEXTUREFORMAT_R8G8B8A8_UNORM: int
+GPU_TEXTUREFORMAT_B8G8R8A8_UNORM: int
 GPU_BLENDFACTOR_ZERO: int
 GPU_BLENDFACTOR_ONE: int
 GPU_BLENDFACTOR_SRC_COLOR: int
@@ -82,7 +84,7 @@ def quit() -> None: ...
 
 
 class Shader:
-    def __init__(self, file: str, stage: int, samplers: int = 0, uniform_buffers: int = 0, storage_buffers: int = 0, storage_textures: int = 0): ...
+    def __init__(self, file: FileLike, stage: int, samplers: int = 0, uniform_buffers: int = 0, storage_buffers: int = 0, storage_textures: int = 0): ...
 
 
 class RenderPass:
@@ -113,3 +115,15 @@ class Texture:
 class Sampler:
     def __init__(self, filter: int, mipmap_mode: int, address_mode: int, anisotropy: float = 0): ...
     def bind(self, render_pass: RenderPass, texture: Texture) -> None: ...
+
+
+class ComputePipeline:
+    def __init__(self, file: FileLike, threadcount_x: int, threadcount_y: int, threadcount_z: int, readwrite_storage_textures: int = 0, readwrite_storage_buffers: int = 0, readonly_storage_textures: int = 0, readonly_storage_buffers: int = 0, uniform_buffers: int = 0): ...
+
+
+class ComputePass:
+    def __init__(self) -> None: ...
+    def begin(self, storage_textures: list[Texture] | None = None, storage_buffers: list[Buffer] | None = None, cycle: bool = False) -> None: ...
+    def bind(self, compute_pipeline: ComputePipeline) -> None: ...
+    def dispatch(self, x: int, y: int, z: int) -> None: ...
+    def end(self) -> None: ...
