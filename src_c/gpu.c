@@ -650,34 +650,45 @@ buffer_dealloc(pgBufferObject *self, PyObject *_null)
 static PyObject *
 texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
 {
-    pgSurfaceObject *surfobj;
-    SDL_Surface *surf = NULL;
-    char *keywords[] = {"surface", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,
-                                     &pgSurface_Type, &surfobj)) {
+    PyObject *data;
+    char *keywords[] = {"data", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", keywords, &data)) {
         return NULL;
     }
-    surf = pgSurface_AsSurface(surfobj);
-    SURF_INIT_CHECK(surf)
 
+    Uint8 *src_pixels;
+    Uint32 size;
 
-    PG_PixelFormat *format;
-    SDL_Palette *palette;
-    if (!PG_GetSurfaceDetails(surf, &format, &palette)) {
-        return RAISE(pgExc_SDLError, SDL_GetError());
+    Py_buffer view;
+    SDL_Surface *surf = NULL;
+
+    if (pgSurface_Check(data)) {
+        surf = pgSurface_AsSurface((pgSurfaceObject *)data);
+        SURF_INIT_CHECK(surf)
+        src_pixels = (Uint8 *)surf->pixels;
+        size = self->width * self->height * 4;
+    } else if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) == 0) {
+        src_pixels = (Uint8 *)view.buf;
+        size = (Uint32)view.len;
+    } else {
+        return RAISE(PyExc_TypeError, "expected a Surface or buffer object");
     }
-
 
     SDL_GPUTransferBuffer* transfer_buffer = SDL_CreateGPUTransferBuffer(
 		device,
 		&(SDL_GPUTransferBufferCreateInfo) {
 			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-			.size = self->width * self->height * 4
+			.size = size
 		}
 	);
     Uint8* transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
-    SDL_memcpy(transfer_data, surf->pixels, self->width * self->height * 4);
+    SDL_memcpy(transfer_data, src_pixels, size);
     SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+
+    if (surf == NULL) {
+        PyBuffer_Release(&view);
+    }
+
     SDL_GPUCommandBuffer* upload_cmd_buf = SDL_AcquireGPUCommandBuffer(device);
     SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(upload_cmd_buf);
     SDL_UploadToGPUTexture(
@@ -947,12 +958,29 @@ static PyObject *
 compute_pass_bind(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
 {
     pgComputePipelineObject *pipeline;
-    char *keywords[] = {"compute_pipeline", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,
-                                     &pgComputePipeline_Type, &pipeline)) {
+    PyObject *storage_textures = NULL;
+    char *keywords[] = {"compute_pipeline", "storage_textures", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|O", keywords,
+                                     &pgComputePipeline_Type, &pipeline, &storage_textures)) {
         return NULL;
     }
     SDL_BindGPUComputePipeline(self->compute_pass, pipeline->pipeline);
+    if (storage_textures != NULL && storage_textures != Py_None) {
+        Uint32 count = (Uint32)PySequence_Length(storage_textures);
+        SDL_GPUTexture **tex_array = (SDL_GPUTexture **)malloc(count * sizeof(SDL_GPUTexture *));
+        for (Uint32 i = 0; i < count; i++) {
+            PyObject *item = PySequence_GetItem(storage_textures, i);
+            if (!pgGPUTexture_Check(item)) {
+                Py_DECREF(item);
+                free(tex_array);
+                return RAISE(PyExc_TypeError, "storage_textures must contain Texture objects");
+            }
+            tex_array[i] = ((pgGPUTextureObject *)item)->texture;
+            Py_DECREF(item);
+        }
+        SDL_BindGPUComputeStorageTextures(self->compute_pass, 0, tex_array, count);
+        free(tex_array);
+    }
     Py_RETURN_NONE;
 }
 
@@ -1030,6 +1058,38 @@ get_swapchain_format(PyObject *self, PyObject *args, PyObject *kwargs)
         return NULL;                                                                                                                                                                                                                                                                                                
     }                                                                                                                                                                                                                                                                                                               
     return PyLong_FromLong((long)SDL_GetGPUSwapchainTextureFormat(device, window->_win));                                                                                                                                                                                                                           
+}
+
+static PyObject *
+set_swapchain_parameters(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgWindowObject *window;
+    int composition, present_mode;
+    char *keywords[] = {"window", "composition", "present_mode", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!ii", keywords,
+                                     &pgWindow_Type, &window, &composition, &present_mode)) {
+        return NULL;
+    }
+    if (!SDL_SetGPUSwapchainParameters(device, window->_win, composition, present_mode)) {
+        return RAISE(pgExc_SDLError, SDL_GetError());
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+supports_swapchain_composition(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgWindowObject *window;
+    int composition;
+    char *keywords[] = {"window", "composition", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!i", keywords,
+                                     &pgWindow_Type, &window, &composition)) {
+        return NULL;
+    }
+    if (SDL_WindowSupportsGPUSwapchainComposition(device, window->_win, composition)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
 }
 
 static PyObject *
@@ -1317,6 +1377,8 @@ static PyMethodDef gpu_methods[] = {
     {"init", (PyCFunction)init, METH_NOARGS, NULL},
     {"claim_window", (PyCFunction)claim_window, METH_VARARGS | METH_KEYWORDS, NULL},
     {"get_swapchain_format", (PyCFunction)get_swapchain_format, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"set_swapchain_parameters", (PyCFunction)set_swapchain_parameters, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"supports_swapchain_composition", (PyCFunction)supports_swapchain_composition, METH_VARARGS | METH_KEYWORDS, NULL},
     {"acquire_swapchain_texture", (PyCFunction)acquire_swapchain_texture, METH_VARARGS | METH_KEYWORDS, NULL},
     {"blit_texture", (PyCFunction)blit_texture, METH_VARARGS | METH_KEYWORDS, NULL},
     {"push_data", (PyCFunction)push_data, METH_VARARGS | METH_KEYWORDS, NULL},
@@ -1462,6 +1524,15 @@ MODINIT_DEFINE(gpu)
     DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE);
     DEC_CONST(GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
     DEC_CONST(GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+    DEC_CONST(GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+    DEC_CONST(GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT);
+    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_SDR);
+    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_SDR_LINEAR);
+    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR);
+    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084);
+    DEC_CONST(GPU_PRESENTMODE_VSYNC);
+    DEC_CONST(GPU_PRESENTMODE_MAILBOX);
+    DEC_CONST(GPU_PRESENTMODE_IMMEDIATE);
     DEC_CONST(GPU_BLENDFACTOR_ZERO);
     DEC_CONST(GPU_BLENDFACTOR_ONE);
     DEC_CONST(GPU_BLENDFACTOR_SRC_COLOR);
