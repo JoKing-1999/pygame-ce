@@ -375,12 +375,29 @@ static PyObject *
 pipeline_bind(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
 {
     pgRenderPassObject *render_pass;
-    char *keywords[] = {"render_pass", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,
-                                     &pgRenderPass_Type, &render_pass)) {
+    PyObject *storage_textures = NULL;
+    char *keywords[] = {"render_pass", "storage_textures", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|O", keywords,
+                                     &pgRenderPass_Type, &render_pass, &storage_textures)) {
         return NULL;
     }
     SDL_BindGPUGraphicsPipeline(render_pass->render_pass, self->pipeline);
+    if (storage_textures != NULL && storage_textures != Py_None) {
+        Uint32 count = (Uint32)PySequence_Length(storage_textures);
+        SDL_GPUTexture **tex_array = (SDL_GPUTexture **)malloc(count * sizeof(SDL_GPUTexture *));
+        for (Uint32 i = 0; i < count; i++) {
+            PyObject *item = PySequence_GetItem(storage_textures, i);
+            if (!pgGPUTexture_Check(item)) {
+                Py_DECREF(item);
+                free(tex_array);
+                return RAISE(PyExc_TypeError, "storage_textures must contain Texture objects");
+            }
+            tex_array[i] = ((pgGPUTextureObject *)item)->texture;
+            Py_DECREF(item);
+        }
+        SDL_BindGPUFragmentStorageTextures(render_pass->render_pass, 0, tex_array, count);
+        free(tex_array);
+    }
     Py_RETURN_NONE;
 }
 
