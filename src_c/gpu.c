@@ -889,17 +889,17 @@ compute_pipeline_init(pgComputePipelineObject *self, PyObject *args, PyObject *k
     SDL_RWops *rw = NULL;
     int readwrite_storage_textures = 0, readwrite_storage_buffers = 0;
     int readonly_storage_textures = 0, readonly_storage_buffers = 0;
-    int uniform_buffers = 0;
+    int uniform_buffers = 0, samplers = 0;
     int threadcount_x, threadcount_y, threadcount_z;
     char *keywords[] = {"file", "threadcount_x", "threadcount_y", "threadcount_z",
                         "readwrite_storage_textures", "readwrite_storage_buffers",
                         "readonly_storage_textures", "readonly_storage_buffers",
-                        "uniform_buffers", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oiii|iiiii", keywords,
+                        "uniform_buffers", "samplers", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oiii|iiiiii", keywords,
                                      &file, &threadcount_x, &threadcount_y, &threadcount_z,
                                      &readwrite_storage_textures, &readwrite_storage_buffers,
                                      &readonly_storage_textures, &readonly_storage_buffers,
-                                     &uniform_buffers)) {
+                                     &uniform_buffers, &samplers)) {
         return -1;
     }
     if (device == NULL) {
@@ -940,6 +940,7 @@ compute_pipeline_init(pgComputePipelineObject *self, PyObject *args, PyObject *k
         .num_readonly_storage_textures = readonly_storage_textures,
         .num_readonly_storage_buffers = readonly_storage_buffers,
         .num_uniform_buffers = uniform_buffers,
+        .num_samplers = samplers,
         .threadcount_x = threadcount_x,
         .threadcount_y = threadcount_y,
         .threadcount_z = threadcount_z,
@@ -1028,9 +1029,10 @@ compute_pass_bind(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
 {
     pgComputePipelineObject *pipeline;
     PyObject *storage_textures = NULL;
-    char *keywords[] = {"compute_pipeline", "storage_textures", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|O", keywords,
-                                     &pgComputePipeline_Type, &pipeline, &storage_textures)) {
+    PyObject *samplers = NULL;
+    char *keywords[] = {"compute_pipeline", "storage_textures", "samplers", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|OO", keywords,
+                                     &pgComputePipeline_Type, &pipeline, &storage_textures, &samplers)) {
         return NULL;
     }
     SDL_BindGPUComputePipeline(self->compute_pass, pipeline->pipeline);
@@ -1049,6 +1051,31 @@ compute_pass_bind(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
         }
         SDL_BindGPUComputeStorageTextures(self->compute_pass, 0, tex_array, count);
         free(tex_array);
+    }
+    if (samplers != NULL && samplers != Py_None) {
+        Uint32 count = (Uint32)PySequence_Length(samplers);
+        SDL_GPUTextureSamplerBinding *bindings = (SDL_GPUTextureSamplerBinding *)calloc(
+            count, sizeof(SDL_GPUTextureSamplerBinding));
+        for (Uint32 i = 0; i < count; i++) {
+            PyObject *tuple = PySequence_GetItem(samplers, i);
+            if (!PyTuple_Check(tuple) || PyTuple_GET_SIZE(tuple) != 2) {
+                Py_DECREF(tuple);
+                free(bindings);
+                return RAISE(PyExc_TypeError, "samplers must contain (Sampler, Texture) tuples");
+            }
+            PyObject *sampler_obj = PyTuple_GET_ITEM(tuple, 0);
+            PyObject *texture_obj = PyTuple_GET_ITEM(tuple, 1);
+            if (!pgSampler_Check(sampler_obj) || !pgGPUTexture_Check(texture_obj)) {
+                Py_DECREF(tuple);
+                free(bindings);
+                return RAISE(PyExc_TypeError, "samplers must contain (Sampler, Texture) tuples");
+            }
+            bindings[i].sampler = ((pgSamplerObject *)sampler_obj)->sampler;
+            bindings[i].texture = ((pgGPUTextureObject *)texture_obj)->texture;
+            Py_DECREF(tuple);
+        }
+        SDL_BindGPUComputeSamplers(self->compute_pass, 0, bindings, count);
+        free(bindings);
     }
     Py_RETURN_NONE;
 }
