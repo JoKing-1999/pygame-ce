@@ -221,6 +221,26 @@ render_pass_draw_primitives(pgRenderPassObject *self, PyObject *args, PyObject *
 }
 
 static PyObject *
+render_pass_draw_primitives_indirect(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgBufferObject *buffer;
+    Uint32 offset = 0, draw_count = 1;
+    int indexed = 0;
+    char *keywords[] = {"buffer", "offset", "draw_count", "indexed", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|IIp", keywords,
+                                     &pgBuffer_Type, &buffer, &offset, &draw_count, &indexed)) {
+        return NULL;
+    }
+    if (indexed) {
+        SDL_DrawGPUIndexedPrimitivesIndirect(self->render_pass, buffer->buffer, offset, draw_count);
+    }
+    else {
+        SDL_DrawGPUPrimitivesIndirect(self->render_pass, buffer->buffer, offset, draw_count);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
 render_pass_set_viewport(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
 {
     float x, y, w, h, min_depth = 0, max_depth = 0;
@@ -468,6 +488,9 @@ buffer_get_element_size(SDL_GPUBufferUsageFlags usage, BufferType buffer_type) {
     else if (usage == SDL_GPU_BUFFERUSAGE_INDEX) {
         return sizeof(Uint16);
     }
+    else if (usage == SDL_GPU_BUFFERUSAGE_INDIRECT) {
+        return 1;  /* raw bytes — size param is byte count */
+    }
     return 0;
 }
 
@@ -548,6 +571,29 @@ buffer_upload_index(pgBufferObject *self, PyObject* data, int size)
     return transfer_buffer;
 }
 
+static inline SDL_GPUTransferBuffer*
+buffer_upload_indirect(pgBufferObject *self, PyObject* data, int size)
+{
+    Py_buffer view;
+    if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) < 0) {
+        return NULL;
+    }
+    if (view.len != size) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_ValueError, "Buffer data size does not match expected size");
+        return NULL;
+    }
+    SDL_GPUTransferBuffer* transfer_buffer = SDL_CreateGPUTransferBuffer(device, &(SDL_GPUTransferBufferCreateInfo) {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = size
+    });
+    void* transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    memcpy(transfer_data, view.buf, size);
+    SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+    PyBuffer_Release(&view);
+    return transfer_buffer;
+}
+
 static PyObject *
 buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -572,6 +618,12 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
     }
     else if (self->usage == SDL_GPU_BUFFERUSAGE_INDEX) {
         transfer_buffer = buffer_upload_index(self, data, size);
+    }
+    else if (self->usage == SDL_GPU_BUFFERUSAGE_INDIRECT) {
+        transfer_buffer = buffer_upload_indirect(self, data, size);
+        if (transfer_buffer == NULL) {
+            return NULL;
+        }
     }
     SDL_GPUCommandBuffer* upload_cmd_buf = SDL_AcquireGPUCommandBuffer(device);
     SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(upload_cmd_buf);
@@ -1240,6 +1292,8 @@ static PyMethodDef render_pass_methods[] = {
     {"begin", (PyCFunction)render_pass_begin,
      METH_VARARGS | METH_KEYWORDS, NULL},
     {"draw_primitives", (PyCFunction)render_pass_draw_primitives,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"draw_primitives_indirect", (PyCFunction)render_pass_draw_primitives_indirect,
      METH_VARARGS | METH_KEYWORDS, NULL},
     {"set_viewport", (PyCFunction)render_pass_set_viewport,
      METH_VARARGS | METH_KEYWORDS, NULL},
