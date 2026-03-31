@@ -28,6 +28,8 @@ static PyTypeObject pgComputePipeline_Type;
 
 static PyTypeObject pgComputePass_Type;
 
+static PyTypeObject pgCopyPass_Type;
+
 #define pgShader_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgShader_Type))
 
@@ -51,6 +53,9 @@ static PyTypeObject pgComputePass_Type;
 
 #define pgComputePass_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgComputePass_Type))
+
+#define pgCopyPass_Check(x) \
+    (PyObject_IsInstance((x), (PyObject *)&pgCopyPass_Type))
 
 #define DEC_CONSTS_(x, y)                           \
     if (PyModule_AddIntConstant(module, x, (int)y)) \
@@ -488,7 +493,10 @@ buffer_get_element_size(SDL_GPUBufferUsageFlags usage, BufferType buffer_type) {
     else if (usage == SDL_GPU_BUFFERUSAGE_INDEX) {
         return sizeof(Uint16);
     }
-    else if (usage == SDL_GPU_BUFFERUSAGE_INDIRECT) {
+    else if (usage == SDL_GPU_BUFFERUSAGE_INDIRECT ||
+             usage == SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ ||
+             usage == SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ ||
+             usage == SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE) {
         return 1;  /* raw bytes — size param is byte count */
     }
     return 0;
@@ -619,7 +627,10 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
     else if (self->usage == SDL_GPU_BUFFERUSAGE_INDEX) {
         transfer_buffer = buffer_upload_index(self, data, size);
     }
-    else if (self->usage == SDL_GPU_BUFFERUSAGE_INDIRECT) {
+    else if (self->usage == SDL_GPU_BUFFERUSAGE_INDIRECT ||
+             self->usage == SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ ||
+             self->usage == SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ ||
+             self->usage == SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE) {
         transfer_buffer = buffer_upload_indirect(self, data, size);
         if (transfer_buffer == NULL) {
             return NULL;
@@ -1115,6 +1126,286 @@ compute_pass_dealloc(pgComputePassObject *self, PyObject *_null)
     Py_TYPE(self)->tp_free(self);
 }
 
+/* CopyPass implementation */
+static PyObject *
+copy_pass_begin(pgCopyPassObject *self, PyObject *_null)
+{
+    if (!acquire_command_buffer()) {
+        return NULL;
+    }
+    self->copy_pass = SDL_BeginGPUCopyPass(cmdbuf);
+    if (self->copy_pass == NULL) {
+        return RAISE(pgExc_SDLError, SDL_GetError());
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+copy_pass_end(pgCopyPassObject *self, PyObject *_null)
+{
+    if (self->copy_pass != NULL) {
+        SDL_EndGPUCopyPass(self->copy_pass);
+        self->copy_pass = NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+copy_pass_upload_to_texture(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgGPUTextureObject *texture;
+    PyObject *data;
+    int cycle = 0;
+    char *keywords[] = {"texture", "data", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|p", keywords,
+                                     &pgGPUTexture_Type, &texture, &data, &cycle)) {
+        return NULL;
+    }
+
+    Uint8 *src_pixels;
+    Uint32 size;
+    Py_buffer view;
+    SDL_Surface *surf = NULL;
+
+    if (pgSurface_Check(data)) {
+        surf = pgSurface_AsSurface((pgSurfaceObject *)data);
+        SURF_INIT_CHECK(surf)
+        src_pixels = (Uint8 *)surf->pixels;
+        size = texture->width * texture->height * 4;
+    } else if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) == 0) {
+        src_pixels = (Uint8 *)view.buf;
+        size = (Uint32)view.len;
+    } else {
+        return RAISE(PyExc_TypeError, "expected a Surface or buffer object");
+    }
+
+    SDL_GPUTransferBuffer *transfer_buffer = SDL_CreateGPUTransferBuffer(
+        device, &(SDL_GPUTransferBufferCreateInfo){
+            .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            .size = size
+        });
+    Uint8 *transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    SDL_memcpy(transfer_data, src_pixels, size);
+    SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+
+    if (surf == NULL) {
+        PyBuffer_Release(&view);
+    }
+
+    SDL_UploadToGPUTexture(
+        self->copy_pass,
+        &(SDL_GPUTextureTransferInfo){
+            .transfer_buffer = transfer_buffer,
+            .offset = 0
+        },
+        &(SDL_GPUTextureRegion){
+            .texture = texture->texture,
+            .w = texture->width,
+            .h = texture->height,
+            .d = 1
+        },
+        cycle
+    );
+    SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+copy_pass_upload_to_buffer(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgBufferObject *buffer;
+    PyObject *data;
+    int cycle = 0;
+    char *keywords[] = {"buffer", "data", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|p", keywords,
+                                     &pgBuffer_Type, &buffer, &data, &cycle)) {
+        return NULL;
+    }
+
+    Py_buffer view;
+    if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) < 0) {
+        return RAISE(PyExc_TypeError, "expected a buffer object");
+    }
+    Uint32 size = (Uint32)view.len;
+
+    SDL_GPUTransferBuffer *transfer_buffer = SDL_CreateGPUTransferBuffer(
+        device, &(SDL_GPUTransferBufferCreateInfo){
+            .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            .size = size
+        });
+    void *transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    memcpy(transfer_data, view.buf, size);
+    SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+    PyBuffer_Release(&view);
+
+    SDL_UploadToGPUBuffer(
+        self->copy_pass,
+        &(SDL_GPUTransferBufferLocation){
+            .transfer_buffer = transfer_buffer,
+            .offset = 0
+        },
+        &(SDL_GPUBufferRegion){
+            .buffer = buffer->buffer,
+            .offset = 0,
+            .size = size
+        },
+        cycle
+    );
+    SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+copy_pass_download_from_texture(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgGPUTextureObject *texture;
+    char *keywords[] = {"texture", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!", keywords,
+                                     &pgGPUTexture_Type, &texture)) {
+        return NULL;
+    }
+
+    Uint32 size = texture->width * texture->height * 4;
+
+    SDL_GPUTransferBuffer *transfer_buffer = SDL_CreateGPUTransferBuffer(
+        device, &(SDL_GPUTransferBufferCreateInfo){
+            .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+            .size = size
+        });
+
+    SDL_DownloadFromGPUTexture(
+        self->copy_pass,
+        &(SDL_GPUTextureRegion){
+            .texture = texture->texture,
+            .w = texture->width,
+            .h = texture->height,
+            .d = 1
+        },
+        &(SDL_GPUTextureTransferInfo){
+            .transfer_buffer = transfer_buffer,
+            .offset = 0
+        }
+    );
+
+    SDL_EndGPUCopyPass(self->copy_pass);
+    self->copy_pass = NULL;
+
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
+    SDL_WaitForGPUFences(device, true, &fence, 1);
+    SDL_ReleaseGPUFence(device, fence);
+    cmdbuf = NULL;
+
+    Uint8 *downloaded = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    PyObject *result = PyBytes_FromStringAndSize((const char *)downloaded, size);
+    SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+    SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+
+    return result;
+}
+
+static PyObject *
+copy_pass_download_from_buffer(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgBufferObject *buffer;
+    Uint32 size;
+    char *keywords[] = {"buffer", "size", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!I", keywords,
+                                     &pgBuffer_Type, &buffer, &size)) {
+        return NULL;
+    }
+
+    SDL_GPUTransferBuffer *transfer_buffer = SDL_CreateGPUTransferBuffer(
+        device, &(SDL_GPUTransferBufferCreateInfo){
+            .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+            .size = size
+        });
+
+    SDL_DownloadFromGPUBuffer(
+        self->copy_pass,
+        &(SDL_GPUBufferRegion){
+            .buffer = buffer->buffer,
+            .offset = 0,
+            .size = size
+        },
+        &(SDL_GPUTransferBufferLocation){
+            .transfer_buffer = transfer_buffer,
+            .offset = 0
+        }
+    );
+
+    SDL_EndGPUCopyPass(self->copy_pass);
+    self->copy_pass = NULL;
+
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
+    SDL_WaitForGPUFences(device, true, &fence, 1);
+    SDL_ReleaseGPUFence(device, fence);
+    cmdbuf = NULL;
+
+    Uint8 *downloaded = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    PyObject *result = PyBytes_FromStringAndSize((const char *)downloaded, size);
+    SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+    SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+
+    return result;
+}
+
+static PyObject *
+copy_pass_copy_texture_to_texture(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgGPUTextureObject *source, *dest;
+    Uint32 w, h;
+    int cycle = 0;
+    char *keywords[] = {"source", "dest", "w", "h", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!II|p", keywords,
+                                     &pgGPUTexture_Type, &source,
+                                     &pgGPUTexture_Type, &dest,
+                                     &w, &h, &cycle)) {
+        return NULL;
+    }
+    SDL_CopyGPUTextureToTexture(
+        self->copy_pass,
+        &(SDL_GPUTextureLocation){.texture = source->texture},
+        &(SDL_GPUTextureLocation){.texture = dest->texture},
+        w, h, 1, cycle
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+copy_pass_copy_buffer_to_buffer(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgBufferObject *source, *dest;
+    Uint32 size;
+    int cycle = 0;
+    char *keywords[] = {"source", "dest", "size", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!I|p", keywords,
+                                     &pgBuffer_Type, &source,
+                                     &pgBuffer_Type, &dest,
+                                     &size, &cycle)) {
+        return NULL;
+    }
+    SDL_CopyGPUBufferToBuffer(
+        self->copy_pass,
+        &(SDL_GPUBufferLocation){.buffer = source->buffer},
+        &(SDL_GPUBufferLocation){.buffer = dest->buffer},
+        size, cycle
+    );
+    Py_RETURN_NONE;
+}
+
+static int
+copy_pass_init(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    self->copy_pass = NULL;
+    return 0;
+}
+
+static void
+copy_pass_dealloc(pgCopyPassObject *self, PyObject *_null)
+{
+    Py_TYPE(self)->tp_free(self);
+}
+
 /* GPU Functions */
 static PyObject *
 init(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -1385,6 +1676,28 @@ static PyMethodDef compute_pass_methods[] = {
 
 static PyGetSetDef compute_pass_getset[] = {{NULL, 0, NULL, NULL, NULL}};
 
+static PyMethodDef copy_pass_methods[] = {
+    {"begin", (PyCFunction)copy_pass_begin,
+     METH_NOARGS, NULL},
+    {"end", (PyCFunction)copy_pass_end,
+     METH_NOARGS, NULL},
+    {"upload_to_texture", (PyCFunction)copy_pass_upload_to_texture,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"upload_to_buffer", (PyCFunction)copy_pass_upload_to_buffer,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"download_from_texture", (PyCFunction)copy_pass_download_from_texture,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"download_from_buffer", (PyCFunction)copy_pass_download_from_buffer,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"copy_texture_to_texture", (PyCFunction)copy_pass_copy_texture_to_texture,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"copy_buffer_to_buffer", (PyCFunction)copy_pass_copy_buffer_to_buffer,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyGetSetDef copy_pass_getset[] = {{NULL, 0, NULL, NULL, NULL}};
+
 static PyTypeObject pgShader_Type = {
     PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.Shader",
     .tp_basicsize = sizeof(pgShaderObject),
@@ -1469,6 +1782,16 @@ static PyTypeObject pgComputePass_Type = {
     .tp_init = (initproc)compute_pass_init,
     .tp_new = PyType_GenericNew,
     .tp_getset = compute_pass_getset
+};
+
+static PyTypeObject pgCopyPass_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.CopyPass",
+    .tp_basicsize = sizeof(pgCopyPassObject),
+    .tp_dealloc = (destructor)copy_pass_dealloc,
+    .tp_methods = copy_pass_methods,
+    .tp_init = (initproc)copy_pass_init,
+    .tp_new = PyType_GenericNew,
+    .tp_getset = copy_pass_getset
 };
 
 static PyMethodDef gpu_methods[] = {
@@ -1570,6 +1893,11 @@ MODINIT_DEFINE(gpu)
     }
 
     if (PyModule_AddType(module, &pgComputePass_Type)) {
+        Py_XDECREF(module);
+        return NULL;
+    }
+
+    if (PyModule_AddType(module, &pgCopyPass_Type)) {
         Py_XDECREF(module);
         return NULL;
     }

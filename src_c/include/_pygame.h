@@ -653,6 +653,10 @@ typedef struct {
     PyObject_HEAD SDL_GPUComputePass *compute_pass;
 } pgComputePassObject;
 
+typedef struct {
+    PyObject_HEAD SDL_GPUCopyPass *copy_pass;
+} pgCopyPassObject;
+
 #ifndef PYGAMEAPI_GPU_INTERNAL
 #define import_pygame_gpu() IMPORT_PYGAME_MODULE(gpu)
 #endif
