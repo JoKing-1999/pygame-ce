@@ -334,7 +334,27 @@ pipeline_fill_vertex_input_state(pgPipelineObject *self, BufferType vertex_input
 {
     SDL_GPUVertexBufferDescription* buffer_description;
     SDL_GPUVertexAttribute* vertex_attribute;
-    if (vertex_input_state == POSITION_COLOR_VERTEX) {
+    if (vertex_input_state == POSITION_VERTEX) {
+        buffer_description = (SDL_GPUVertexBufferDescription*)malloc(sizeof(SDL_GPUVertexBufferDescription));
+        buffer_description->slot = 0;
+        buffer_description->input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+        buffer_description->instance_step_rate = 0;
+        buffer_description->pitch = sizeof(PositionVertex);
+
+        vertex_attribute = (SDL_GPUVertexAttribute*)malloc(sizeof(SDL_GPUVertexAttribute));
+        vertex_attribute[0].buffer_slot = 0;
+        vertex_attribute[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+        vertex_attribute[0].location = 0;
+        vertex_attribute[0].offset = 0;
+
+        self->pipeline_info.vertex_input_state = (SDL_GPUVertexInputState){
+            .num_vertex_buffers = 1,
+            .vertex_buffer_descriptions = buffer_description,
+            .num_vertex_attributes = 1,
+            .vertex_attributes = vertex_attribute
+        };
+    }
+    else if (vertex_input_state == POSITION_COLOR_VERTEX) {
         buffer_description = (SDL_GPUVertexBufferDescription*)malloc(sizeof(SDL_GPUVertexBufferDescription));
         buffer_description->slot = 0;
         buffer_description->input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
@@ -522,6 +542,29 @@ buffer_get_element_size(SDL_GPUBufferUsageFlags usage, BufferType buffer_type) {
 }
 
 static inline SDL_GPUTransferBuffer*
+buffer_upload_position_vertex(pgBufferObject *self, PyObject* data, int size)
+{
+    SDL_GPUTransferBuffer* transfer_buffer = SDL_CreateGPUTransferBuffer(device, &(SDL_GPUTransferBufferCreateInfo) {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = size
+    });
+    PositionVertex* transfer_data = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    for (int i = 0; i < self->no_of_elements; i++) {
+        PyObject* inner_data_obj = PySequence_GetItem(data, i);
+        PyObject *v0 = PySequence_GetItem(inner_data_obj, 0);
+        PyObject *v1 = PySequence_GetItem(inner_data_obj, 1);
+        PyObject *v2 = PySequence_GetItem(inner_data_obj, 2);
+        transfer_data[i].x = (float)PyFloat_AsDouble(v0);
+        transfer_data[i].y = (float)PyFloat_AsDouble(v1);
+        transfer_data[i].z = (float)PyFloat_AsDouble(v2);
+        Py_DECREF(v0); Py_DECREF(v1); Py_DECREF(v2);
+        Py_DECREF(inner_data_obj);
+    }
+    SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+    return transfer_buffer;
+}
+
+static inline SDL_GPUTransferBuffer*
 buffer_upload_position_color_vertex(pgBufferObject *self, PyObject* data, int size)
 {
     SDL_GPUTransferBuffer* transfer_buffer = SDL_CreateGPUTransferBuffer(device, &(SDL_GPUTransferBufferCreateInfo) {
@@ -633,6 +676,9 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUTransferBuffer* transfer_buffer;
     if (self->usage == SDL_GPU_BUFFERUSAGE_VERTEX) {
         switch (self->buffer_type) {
+            case POSITION_VERTEX:
+                transfer_buffer = buffer_upload_position_vertex(self, data, size);
+                break;
             case POSITION_COLOR_VERTEX:
                 transfer_buffer = buffer_upload_position_color_vertex(self, data, size);
                 break;

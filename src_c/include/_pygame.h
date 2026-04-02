@@ -591,6 +591,10 @@ typedef struct {
 
 typedef struct {
     float x, y, z;
+} PositionVertex;
+
+typedef struct {
+    float x, y, z;
     Uint8 r, g, b, a;
 } PositionColorVertex;
 
