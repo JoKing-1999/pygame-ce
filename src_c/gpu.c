@@ -1708,23 +1708,23 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
     pgGPUTextureObject *source, *dest;
     int source_w, source_h, dest_w, dest_h;
     int source_layer = 0, source_x = 0, source_y = 0;
-    int dest_x = 0, dest_y = 0;
+    int dest_layer = 0, dest_x = 0, dest_y = 0;
     int load_op = SDL_GPU_LOADOP_LOAD;
     int filter = SDL_GPU_FILTER_NEAREST;
     char *keywords[] = {
         "source", "source_w", "source_h",
         "dest", "dest_w", "dest_h",
         "source_layer", "source_x", "source_y",
-        "dest_x", "dest_y",
+        "dest_layer", "dest_x", "dest_y",
         "load_op", "filter", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiii", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiii", keywords,
                                      &pgGPUTexture_Type, &source,
                                      &source_w, &source_h,
                                      &pgGPUTexture_Type, &dest,
                                      &dest_w, &dest_h,
                                      &source_layer, &source_x, &source_y,
-                                     &dest_x, &dest_y,
+                                     &dest_layer, &dest_x, &dest_y,
                                      &load_op, &filter)) {
         return NULL;
     }
@@ -1736,6 +1736,7 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
         .source.w = source_w,
         .source.h = source_h,
         .destination.texture = dest->texture,
+        .destination.layer_or_depth_plane = dest_layer,
         .destination.x = dest_x,
         .destination.y = dest_y,
         .destination.w = dest_w,
