@@ -1743,15 +1743,19 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
     int filter = SDL_GPU_FILTER_NEAREST;
     int flip_mode = SDL_FLIP_NONE;
     int source_mip_level = 0, dest_mip_level = 0;
+    PyObject *colorobj = NULL;
+    Uint8 rgba[4];
+    SDL_FColor floatrgba = { 0 };
     char *keywords[] = {
         "source", "source_w", "source_h",
         "dest", "dest_w", "dest_h",
         "source_layer", "source_x", "source_y",
         "dest_layer", "dest_x", "dest_y",
         "load_op", "filter", "flip_mode",
-        "source_mip_level", "dest_mip_level", NULL
+        "source_mip_level", "dest_mip_level",
+        "clear_color", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiiiiii", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiiiiiiO", keywords,
                                      &pgGPUTexture_Type, &source,
                                      &source_w, &source_h,
                                      &pgGPUTexture_Type, &dest,
@@ -1759,8 +1763,18 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
                                      &source_layer, &source_x, &source_y,
                                      &dest_layer, &dest_x, &dest_y,
                                      &load_op, &filter, &flip_mode,
-                                     &source_mip_level, &dest_mip_level)) {
+                                     &source_mip_level, &dest_mip_level,
+                                     &colorobj)) {
         return NULL;
+    }
+    if (colorobj != NULL) {
+        if (!pg_RGBAFromObjEx(colorobj, rgba, PG_COLOR_HANDLE_ALL)) {
+            return NULL;
+        }
+        floatrgba.r = (float)rgba[0] / 255;
+        floatrgba.g = (float)rgba[1] / 255;
+        floatrgba.b = (float)rgba[2] / 255;
+        floatrgba.a = (float)rgba[3] / 255;
     }
     SDL_BlitGPUTexture(cmdbuf, &(SDL_GPUBlitInfo){
         .source.texture = source->texture,
@@ -1778,6 +1792,7 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
         .destination.w = dest_w,
         .destination.h = dest_h,
         .load_op = load_op,
+        .clear_color = floatrgba,
         .flip_mode = flip_mode,
         .filter = filter
     });
@@ -1871,6 +1886,19 @@ wait_for_fences(PyObject *self, PyObject *args, PyObject *kwargs)
     }
     SDL_WaitForGPUFences(device, wait_all, fences, count);
     free(fences);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+set_allowed_frames_in_flight(PyObject *self, PyObject *args)
+{
+    int count;
+    if (!PyArg_ParseTuple(args, "i", &count)) {
+        return NULL;
+    }
+    if (!SDL_SetGPUAllowedFramesInFlight(device, count)) {
+        return RAISE(pgExc_SDLError, SDL_GetError());
+    }
     Py_RETURN_NONE;
 }
 
@@ -2147,6 +2175,7 @@ static PyMethodDef gpu_methods[] = {
     {"submit", (PyCFunction)submit, METH_NOARGS, NULL},
     {"submit_and_acquire_fence", (PyCFunction)submit_and_acquire_fence, METH_NOARGS, NULL},
     {"wait_for_fences", (PyCFunction)wait_for_fences, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"set_allowed_frames_in_flight", (PyCFunction)set_allowed_frames_in_flight, METH_VARARGS, NULL},
     {"quit", (PyCFunction)quit, METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}
 };
