@@ -745,9 +745,9 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
              self->usage == SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ ||
              self->usage == SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE) {
         transfer_buffer = buffer_upload_indirect(self, data, size);
-        if (transfer_buffer == NULL) {
-            return NULL;
-        }
+    }
+    if (transfer_buffer == NULL) {
+        return RAISE(pgExc_SDLError, "Failed to create transfer buffer for upload");
     }
     SDL_GPUCommandBuffer* upload_cmd_buf = SDL_AcquireGPUCommandBuffer(device);
     SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(upload_cmd_buf);
