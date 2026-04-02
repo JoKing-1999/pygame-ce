@@ -844,8 +844,9 @@ static PyObject *
 texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
 {
     PyObject *data;
-    char *keywords[] = {"data", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", keywords, &data)) {
+    Uint32 layer = 0;
+    char *keywords[] = {"data", "layer", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|I", keywords, &data, &layer)) {
         return NULL;
     }
 
@@ -892,6 +893,7 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
         },
         &(SDL_GPUTextureRegion) {
             .texture = self->texture,
+            .layer = layer,
             .w = self->width,
             .h = self->height,
             .d = 1
