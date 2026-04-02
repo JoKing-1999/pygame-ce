@@ -670,6 +670,11 @@ typedef struct {
     PyObject_HEAD SDL_GPUFence *fence;
 } pgFenceObject;
 
+typedef struct {
+    PyObject_HEAD
+    SDL_GPUDepthStencilState state;
+} pgDepthStencilStateObject;
+
 #ifndef PYGAMEAPI_GPU_INTERNAL
 #define import_pygame_gpu() IMPORT_PYGAME_MODULE(gpu)
 #endif

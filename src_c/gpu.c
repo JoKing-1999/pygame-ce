@@ -36,6 +36,8 @@ static PyTypeObject pgTransferBuffer_Type;
 
 static PyTypeObject pgFence_Type;
 
+static PyTypeObject pgDepthStencilState_Type;
+
 #define pgShader_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgShader_Type))
 
@@ -68,6 +70,9 @@ static PyTypeObject pgFence_Type;
 
 #define pgFence_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgFence_Type))
+
+#define pgDepthStencilState_Check(x) \
+    (PyObject_IsInstance((x), (PyObject *)&pgDepthStencilState_Type))
 
 #define DEC_CONSTS_(x, y)                           \
     if (PyModule_AddIntConstant(module, x, (int)y)) \
@@ -168,12 +173,13 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     pgWindowObject *window = NULL;
     pgGPUTextureObject *texture = NULL;
     pgGPUTextureObject *resolve_texture = NULL;
+    pgGPUTextureObject *depth_stencil_texture = NULL;
     Uint32 layer = 0;
     int cycle = 0;
     SDL_GPUTexture* swapchainTexture;
-    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!", keywords,
-                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture)) {
+    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", "depth_stencil_texture", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!O!", keywords,
+                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture, &pgGPUTexture_Type, &depth_stencil_texture)) {
         return NULL;
     }
     if (window == NULL && texture == NULL) {
@@ -185,13 +191,26 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     if (!acquire_command_buffer()) {
         return NULL;
     }
+    SDL_GPUDepthStencilTargetInfo *ds_info_ptr = NULL;
+    SDL_GPUDepthStencilTargetInfo ds_info = { 0 };
+    if (depth_stencil_texture != NULL) {
+        ds_info.texture = depth_stencil_texture->texture;
+        ds_info.cycle = true;
+        ds_info.load_op = SDL_GPU_LOADOP_CLEAR;
+        ds_info.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ds_info.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+        ds_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ds_info.clear_depth = 0;
+        ds_info.clear_stencil = 0;
+        ds_info_ptr = &ds_info;
+    }
     if (texture != NULL) {
         self->color_info.texture = texture->texture;
         self->color_info.layer_or_depth_plane = layer;
         self->color_info.cycle = cycle;
         self->color_info.resolve_texture = resolve_texture ? resolve_texture->texture : NULL;
         if (self->render_pass == NULL) {
-            self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, NULL);
+            self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, ds_info_ptr);
             active_render_passes++;
         }
     }
@@ -205,11 +224,23 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
         if (swapchainTexture != NULL) {
             self->color_info.texture = swapchainTexture;
             if (self->render_pass == NULL) {
-                self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, NULL);
+                self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, ds_info_ptr);
                 active_render_passes++;
             }
         }
     }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+render_pass_set_stencil_reference(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
+{
+    Uint8 reference;
+    char *keywords[] = {"reference", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "B", keywords, &reference)) {
+        return NULL;
+    }
+    SDL_SetGPUStencilReference(self->render_pass, reference);
     Py_RETURN_NONE;
 }
 
@@ -405,7 +436,7 @@ pipeline_fill_vertex_input_state(pgPipelineObject *self, BufferType vertex_input
 }
 
 static void
-pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GPUBlendFactor src_color_blendfactor, SDL_GPUBlendFactor src_alpha_blendfactor, SDL_GPUBlendFactor dst_color_blendfactor, SDL_GPUBlendFactor dst_alpha_blendfactor)
+pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GPUBlendFactor src_color_blendfactor, SDL_GPUBlendFactor src_alpha_blendfactor, SDL_GPUBlendFactor dst_color_blendfactor, SDL_GPUBlendFactor dst_alpha_blendfactor, SDL_GPUTextureFormat depth_stencil_format)
 {
     SDL_GPUColorTargetDescription *color_target_descriptions = NULL;
     if (src_color_blendfactor || src_alpha_blendfactor || dst_color_blendfactor || dst_alpha_blendfactor) {
@@ -420,7 +451,9 @@ pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GP
         color_target_descriptions->blend_state.dst_alpha_blendfactor = dst_alpha_blendfactor;
         self->pipeline_info.target_info = (SDL_GPUGraphicsPipelineTargetInfo){
             .num_color_targets = 1,
-            .color_target_descriptions = color_target_descriptions
+            .color_target_descriptions = color_target_descriptions,
+            .has_depth_stencil_target = depth_stencil_format != 0,
+            .depth_stencil_format = depth_stencil_format
         };
     }
     else {
@@ -429,6 +462,8 @@ pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GP
             .color_target_descriptions = (SDL_GPUColorTargetDescription[]){{
                 .format = SDL_GetGPUSwapchainTextureFormat(device, window->_win)
             }},
+            .has_depth_stencil_target = depth_stencil_format != 0,
+            .depth_stencil_format = depth_stencil_format
         };
     }
 }
@@ -475,12 +510,22 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUFrontFace front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     SDL_GPUBlendFactor src_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID, src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID, dst_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID, dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
-    char *keywords[] = {"window", "vertex_shader", "fragment_shader", "primitive_type", "fill_mode", "vertex_input_state", "cull_mode", "front_face", "src_color_blendfactor", "src_alpha_blendfactor", "dst_color_blendfactor", "dst_alpha_blendfactor", "sample_count", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!i|iiiiiiiii", keywords,
-                                     &pgWindow_Type, &window, &pgShader_Type, &vertex_shader, &pgShader_Type, &fragment_shader, &primitive_type, &fill_mode, &vertex_input_state, &cull_mode, &front_face, &src_color_blendfactor, &src_alpha_blendfactor, &dst_color_blendfactor, &dst_alpha_blendfactor, &sample_count)) {
+    pgDepthStencilStateObject *depth_stencil_state = NULL;
+    PyObject *depth_stencil_state_obj = NULL;
+    SDL_GPUTextureFormat depth_stencil_format = 0;
+    char *keywords[] = {"window", "vertex_shader", "fragment_shader", "primitive_type", "fill_mode", "vertex_input_state", "cull_mode", "front_face", "src_color_blendfactor", "src_alpha_blendfactor", "dst_color_blendfactor", "dst_alpha_blendfactor", "sample_count", "depth_stencil_state", "depth_stencil_format", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!i|iiiiiiiiiOi", keywords,
+                                     &pgWindow_Type, &window, &pgShader_Type, &vertex_shader, &pgShader_Type, &fragment_shader, &primitive_type, &fill_mode, &vertex_input_state, &cull_mode, &front_face, &src_color_blendfactor, &src_alpha_blendfactor, &dst_color_blendfactor, &dst_alpha_blendfactor, &sample_count, &depth_stencil_state_obj, &depth_stencil_format)) {
         return -1;
     }
-    pipeline_fill_target_info(self, window, src_color_blendfactor, src_alpha_blendfactor, dst_color_blendfactor, dst_alpha_blendfactor);
+    if (depth_stencil_state_obj != NULL && depth_stencil_state_obj != Py_None) {
+        if (!pgDepthStencilState_Check(depth_stencil_state_obj)) {
+            PyErr_SetString(PyExc_TypeError, "depth_stencil_state must be a DepthStencilState");
+            return -1;
+        }
+        depth_stencil_state = (pgDepthStencilStateObject *)depth_stencil_state_obj;
+    }
+    pipeline_fill_target_info(self, window, src_color_blendfactor, src_alpha_blendfactor, dst_color_blendfactor, dst_alpha_blendfactor, depth_stencil_format);
     self->pipeline_info.vertex_shader = vertex_shader->shader;
     self->pipeline_info.fragment_shader = fragment_shader->shader;
     self->pipeline_info.primitive_type = primitive_type;
@@ -491,6 +536,9 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
         pipeline_fill_vertex_input_state(self, vertex_input_state);
     }
     self->pipeline_info.multisample_state.sample_count = sample_count;
+    if (depth_stencil_state != NULL) {
+        self->pipeline_info.depth_stencil_state = depth_stencil_state->state;
+    }
     self->pipeline = SDL_CreateGPUGraphicsPipeline(device, &self->pipeline_info);
 
     free((void*)self->pipeline_info.vertex_input_state.vertex_buffer_descriptions);
@@ -1464,6 +1512,64 @@ fence_query(pgFenceObject *self, PyObject *_null)
     Py_RETURN_FALSE;
 }
 
+/* DepthStencilState implementation */
+static int
+depth_stencil_state_init(pgDepthStencilStateObject *self, PyObject *args, PyObject *kwargs)
+{
+    int enable_depth_test = 0, enable_depth_write = 0, enable_stencil_test = 0;
+    SDL_GPUCompareOp compare_op = SDL_GPU_COMPAREOP_INVALID;
+    Uint8 compare_mask = 0xFF, write_mask = 0xFF;
+    SDL_GPUCompareOp front_compare_op = SDL_GPU_COMPAREOP_INVALID;
+    SDL_GPUStencilOp front_fail_op = SDL_GPU_STENCILOP_KEEP;
+    SDL_GPUStencilOp front_pass_op = SDL_GPU_STENCILOP_KEEP;
+    SDL_GPUStencilOp front_depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+    SDL_GPUCompareOp back_compare_op = SDL_GPU_COMPAREOP_INVALID;
+    SDL_GPUStencilOp back_fail_op = SDL_GPU_STENCILOP_KEEP;
+    SDL_GPUStencilOp back_pass_op = SDL_GPU_STENCILOP_KEEP;
+    SDL_GPUStencilOp back_depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+    char *keywords[] = {
+        "enable_depth_test", "enable_depth_write", "enable_stencil_test",
+        "compare_op", "compare_mask", "write_mask",
+        "front_compare_op", "front_fail_op", "front_pass_op", "front_depth_fail_op",
+        "back_compare_op", "back_fail_op", "back_pass_op", "back_depth_fail_op",
+        NULL
+    };
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|pppiBBiiiiiiii", keywords,
+                                     &enable_depth_test, &enable_depth_write, &enable_stencil_test,
+                                     &compare_op, &compare_mask, &write_mask,
+                                     &front_compare_op, &front_fail_op, &front_pass_op, &front_depth_fail_op,
+                                     &back_compare_op, &back_fail_op, &back_pass_op, &back_depth_fail_op)) {
+        return -1;
+    }
+    self->state = (SDL_GPUDepthStencilState){
+        .enable_depth_test = enable_depth_test,
+        .enable_depth_write = enable_depth_write,
+        .enable_stencil_test = enable_stencil_test,
+        .compare_op = compare_op,
+        .compare_mask = compare_mask,
+        .write_mask = write_mask,
+        .front_stencil_state = {
+            .compare_op = front_compare_op,
+            .fail_op = front_fail_op,
+            .pass_op = front_pass_op,
+            .depth_fail_op = front_depth_fail_op,
+        },
+        .back_stencil_state = {
+            .compare_op = back_compare_op,
+            .fail_op = back_fail_op,
+            .pass_op = back_pass_op,
+            .depth_fail_op = back_depth_fail_op,
+        },
+    };
+    return 0;
+}
+
+static void
+depth_stencil_state_dealloc(pgDepthStencilStateObject *self, PyObject *_null)
+{
+    Py_TYPE(self)->tp_free(self);
+}
+
 /* GPU Functions */
 static PyObject *
 init(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -1532,6 +1638,21 @@ supports_swapchain_composition(PyObject *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
     if (SDL_WindowSupportsGPUSwapchainComposition(device, window->_win, composition)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
+static PyObject *
+format_supported(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    int format, type, usage;
+    char *keywords[] = {"format", "type", "usage", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iii", keywords,
+                                     &format, &type, &usage)) {
+        return NULL;
+    }
+    if (SDL_GPUTextureSupportsFormat(device, format, type, usage)) {
         Py_RETURN_TRUE;
     }
     Py_RETURN_FALSE;
@@ -1739,6 +1860,8 @@ static PyMethodDef render_pass_methods[] = {
     {"set_viewport", (PyCFunction)render_pass_set_viewport,
      METH_VARARGS | METH_KEYWORDS, NULL},
     {"set_scissor", (PyCFunction)render_pass_set_scissor,
+     METH_VARARGS | METH_KEYWORDS, NULL},
+    {"set_stencil_reference", (PyCFunction)render_pass_set_stencil_reference,
      METH_VARARGS | METH_KEYWORDS, NULL},
     {"end", (PyCFunction)render_pass_end,
     METH_NOARGS, NULL},
@@ -1954,12 +2077,29 @@ static PyTypeObject pgFence_Type = {
     .tp_getset = fence_getset
 };
 
+static PyMethodDef depth_stencil_state_methods[] = {
+    {NULL, NULL, 0, NULL}
+};
+
+static PyGetSetDef depth_stencil_state_getset[] = {{NULL, 0, NULL, NULL, NULL}};
+
+static PyTypeObject pgDepthStencilState_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.DepthStencilState",
+    .tp_basicsize = sizeof(pgDepthStencilStateObject),
+    .tp_dealloc = (destructor)depth_stencil_state_dealloc,
+    .tp_methods = depth_stencil_state_methods,
+    .tp_init = (initproc)depth_stencil_state_init,
+    .tp_new = PyType_GenericNew,
+    .tp_getset = depth_stencil_state_getset
+};
+
 static PyMethodDef gpu_methods[] = {
     {"init", (PyCFunction)init, METH_NOARGS, NULL},
     {"claim_window", (PyCFunction)claim_window, METH_VARARGS | METH_KEYWORDS, NULL},
     {"get_swapchain_format", (PyCFunction)get_swapchain_format, METH_VARARGS | METH_KEYWORDS, NULL},
     {"set_swapchain_parameters", (PyCFunction)set_swapchain_parameters, METH_VARARGS | METH_KEYWORDS, NULL},
     {"supports_swapchain_composition", (PyCFunction)supports_swapchain_composition, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"format_supported", (PyCFunction)format_supported, METH_VARARGS | METH_KEYWORDS, NULL},
     {"format_supports_sample_count", (PyCFunction)format_supports_sample_count, METH_VARARGS | METH_KEYWORDS, NULL},
     {"acquire_swapchain_texture", (PyCFunction)acquire_swapchain_texture, METH_VARARGS | METH_KEYWORDS, NULL},
     {"blit_texture", (PyCFunction)blit_texture, METH_VARARGS | METH_KEYWORDS, NULL},
@@ -2075,6 +2215,11 @@ MODINIT_DEFINE(gpu)
         return NULL;
     }
 
+    if (PyModule_AddType(module, &pgDepthStencilState_Type)) {
+        Py_XDECREF(module);
+        return NULL;
+    }
+
     DEC_CONST(GPU_SHADERSTAGE_VERTEX);
     DEC_CONST(GPU_SHADERSTAGE_FRAGMENT);
     DEC_CONST(GPU_LOADOP_LOAD);
@@ -2151,6 +2296,29 @@ MODINIT_DEFINE(gpu)
     DEC_CONST(GPU_SAMPLECOUNT_2);
     DEC_CONST(GPU_SAMPLECOUNT_4);
     DEC_CONST(GPU_SAMPLECOUNT_8);
+    DEC_CONST(GPU_TEXTUREFORMAT_D16_UNORM);
+    DEC_CONST(GPU_TEXTUREFORMAT_D24_UNORM);
+    DEC_CONST(GPU_TEXTUREFORMAT_D32_FLOAT);
+    DEC_CONST(GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT);
+    DEC_CONST(GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT);
+    DEC_CONST(GPU_COMPAREOP_INVALID);
+    DEC_CONST(GPU_COMPAREOP_NEVER);
+    DEC_CONST(GPU_COMPAREOP_LESS);
+    DEC_CONST(GPU_COMPAREOP_EQUAL);
+    DEC_CONST(GPU_COMPAREOP_LESS_OR_EQUAL);
+    DEC_CONST(GPU_COMPAREOP_GREATER);
+    DEC_CONST(GPU_COMPAREOP_NOT_EQUAL);
+    DEC_CONST(GPU_COMPAREOP_GREATER_OR_EQUAL);
+    DEC_CONST(GPU_COMPAREOP_ALWAYS);
+    DEC_CONST(GPU_STENCILOP_INVALID);
+    DEC_CONST(GPU_STENCILOP_KEEP);
+    DEC_CONST(GPU_STENCILOP_ZERO);
+    DEC_CONST(GPU_STENCILOP_REPLACE);
+    DEC_CONST(GPU_STENCILOP_INCREMENT_AND_CLAMP);
+    DEC_CONST(GPU_STENCILOP_DECREMENT_AND_CLAMP);
+    DEC_CONST(GPU_STENCILOP_INVERT);
+    DEC_CONST(GPU_STENCILOP_INCREMENT_AND_WRAP);
+    DEC_CONST(GPU_STENCILOP_DECREMENT_AND_WRAP);
     DEC_CONSTS_("POSITION_VERTEX", POSITION_VERTEX);
     DEC_CONSTS_("POSITION_COLOR_VERTEX", POSITION_COLOR_VERTEX);
     DEC_CONSTS_("POSITION_TEXTURE_VERTEX", POSITION_TEXTURE_VERTEX);
