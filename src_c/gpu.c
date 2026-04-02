@@ -10,6 +10,7 @@ static SDL_GPUDevice *device;
 static SDL_GPUCommandBuffer *cmdbuf = NULL;
 
 static int active_render_passes = 0;
+static int active_compute_passes = 0;
 
 static int swapchain_acquired = 0;
 
@@ -93,6 +94,16 @@ acquire_command_buffer()
         }
     }
     return 1;
+}
+
+static int
+acquire_command_buffer_for_copy()
+{
+    if (active_render_passes || active_compute_passes) {
+        RAISE(pgExc_SDLError, "Cannot start a copy pass during an active render or compute pass");
+        return 0;
+    }
+    return acquire_command_buffer();
 }
 
 /* Shader implementation */
@@ -749,8 +760,11 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
     if (transfer_buffer == NULL) {
         return RAISE(pgExc_SDLError, "Failed to create transfer buffer for upload");
     }
-    SDL_GPUCommandBuffer* upload_cmd_buf = SDL_AcquireGPUCommandBuffer(device);
-    SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(upload_cmd_buf);
+    if (!acquire_command_buffer_for_copy()) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+        return NULL;
+    }
+    SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(cmdbuf);
     SDL_UploadToGPUBuffer(
 		copy_pass,
 		&(SDL_GPUTransferBufferLocation) {
@@ -766,7 +780,6 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
 	);
     SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
     SDL_EndGPUCopyPass(copy_pass);
-	SDL_SubmitGPUCommandBuffer(upload_cmd_buf);
     Py_RETURN_NONE;
 }
 
@@ -883,8 +896,11 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
         PyBuffer_Release(&view);
     }
 
-    SDL_GPUCommandBuffer* upload_cmd_buf = SDL_AcquireGPUCommandBuffer(device);
-    SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(upload_cmd_buf);
+    if (!acquire_command_buffer_for_copy()) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+        return NULL;
+    }
+    SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(cmdbuf);
     SDL_UploadToGPUTexture(
         copy_pass,
         &(SDL_GPUTextureTransferInfo){
@@ -902,7 +918,6 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     );
     SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
     SDL_EndGPUCopyPass(copy_pass);
-	SDL_SubmitGPUCommandBuffer(upload_cmd_buf);
     Py_RETURN_NONE;
 }
 
@@ -1149,6 +1164,7 @@ compute_pass_begin(pgComputePassObject *self, PyObject *args, PyObject *kwargs)
     if (self->compute_pass == NULL) {
         return RAISE(pgExc_SDLError, SDL_GetError());
     }
+    active_compute_passes++;
     Py_RETURN_NONE;
 }
 
@@ -1226,6 +1242,7 @@ compute_pass_end(pgComputePassObject *self, PyObject *_null)
     if (self->compute_pass != NULL) {
         SDL_EndGPUComputePass(self->compute_pass);
         self->compute_pass = NULL;
+        active_compute_passes--;
     }
     Py_RETURN_NONE;
 }
@@ -1247,7 +1264,7 @@ compute_pass_dealloc(pgComputePassObject *self, PyObject *_null)
 static PyObject *
 copy_pass_begin(pgCopyPassObject *self, PyObject *_null)
 {
-    if (!acquire_command_buffer()) {
+    if (!acquire_command_buffer_for_copy()) {
         return NULL;
     }
     self->copy_pass = SDL_BeginGPUCopyPass(cmdbuf);
@@ -1713,21 +1730,22 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
     int dest_layer = 0, dest_x = 0, dest_y = 0;
     int load_op = SDL_GPU_LOADOP_LOAD;
     int filter = SDL_GPU_FILTER_NEAREST;
+    int flip_mode = SDL_FLIP_NONE;
     char *keywords[] = {
         "source", "source_w", "source_h",
         "dest", "dest_w", "dest_h",
         "source_layer", "source_x", "source_y",
         "dest_layer", "dest_x", "dest_y",
-        "load_op", "filter", NULL
+        "load_op", "filter", "flip_mode", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiii", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiiii", keywords,
                                      &pgGPUTexture_Type, &source,
                                      &source_w, &source_h,
                                      &pgGPUTexture_Type, &dest,
                                      &dest_w, &dest_h,
                                      &source_layer, &source_x, &source_y,
                                      &dest_layer, &dest_x, &dest_y,
-                                     &load_op, &filter)) {
+                                     &load_op, &filter, &flip_mode)) {
         return NULL;
     }
     SDL_BlitGPUTexture(cmdbuf, &(SDL_GPUBlitInfo){
@@ -1744,6 +1762,7 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
         .destination.w = dest_w,
         .destination.h = dest_h,
         .load_op = load_op,
+        .flip_mode = flip_mode,
         .filter = filter
     });
     Py_RETURN_NONE;
