@@ -167,12 +167,13 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
 {
     pgWindowObject *window = NULL;
     pgGPUTextureObject *texture = NULL;
+    pgGPUTextureObject *resolve_texture = NULL;
     Uint32 layer = 0;
     int cycle = 0;
     SDL_GPUTexture* swapchainTexture;
-    char *keywords[] = {"window", "texture", "layer", "cycle", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ip", keywords,
-                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle)) {
+    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!", keywords,
+                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture)) {
         return NULL;
     }
     if (window == NULL && texture == NULL) {
@@ -188,6 +189,7 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
         self->color_info.texture = texture->texture;
         self->color_info.layer_or_depth_plane = layer;
         self->color_info.cycle = cycle;
+        self->color_info.resolve_texture = resolve_texture ? resolve_texture->texture : NULL;
         if (self->render_pass == NULL) {
             self->render_pass = SDL_BeginGPURenderPass(cmdbuf, &self->color_info, 1, NULL);
             active_render_passes++;
@@ -452,9 +454,10 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUCullMode cull_mode = SDL_GPU_CULLMODE_NONE;
     SDL_GPUFrontFace front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     SDL_GPUBlendFactor src_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID, src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID, dst_color_blendfactor = SDL_GPU_BLENDFACTOR_INVALID, dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_INVALID;
-    char *keywords[] = {"window", "vertex_shader", "fragment_shader", "primitive_type", "fill_mode", "vertex_input_state", "cull_mode", "front_face", "src_color_blendfactor", "src_alpha_blendfactor", "dst_color_blendfactor", "dst_alpha_blendfactor", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!i|iiiiiiii", keywords,
-                                     &pgWindow_Type, &window, &pgShader_Type, &vertex_shader, &pgShader_Type, &fragment_shader, &primitive_type, &fill_mode, &vertex_input_state, &cull_mode, &front_face, &src_color_blendfactor, &src_alpha_blendfactor, &dst_color_blendfactor, &dst_alpha_blendfactor)) {
+    SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+    char *keywords[] = {"window", "vertex_shader", "fragment_shader", "primitive_type", "fill_mode", "vertex_input_state", "cull_mode", "front_face", "src_color_blendfactor", "src_alpha_blendfactor", "dst_color_blendfactor", "dst_alpha_blendfactor", "sample_count", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!i|iiiiiiiii", keywords,
+                                     &pgWindow_Type, &window, &pgShader_Type, &vertex_shader, &pgShader_Type, &fragment_shader, &primitive_type, &fill_mode, &vertex_input_state, &cull_mode, &front_face, &src_color_blendfactor, &src_alpha_blendfactor, &dst_color_blendfactor, &dst_alpha_blendfactor, &sample_count)) {
         return -1;
     }
     pipeline_fill_target_info(self, window, src_color_blendfactor, src_alpha_blendfactor, dst_color_blendfactor, dst_alpha_blendfactor);
@@ -467,6 +470,7 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
     if (vertex_input_state > -1) {
         pipeline_fill_vertex_input_state(self, vertex_input_state);
     }
+    self->pipeline_info.multisample_state.sample_count = sample_count;
     self->pipeline = SDL_CreateGPUGraphicsPipeline(device, &self->pipeline_info);
 
     free((void*)self->pipeline_info.vertex_input_state.vertex_buffer_descriptions);
@@ -815,10 +819,11 @@ texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     int width, height;
     SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
     Uint32 depth = 1;
+    SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     PyObject *sizeobj = NULL;
-    char *keywords[] = {"size", "texture_type", "usage", "format", "depth", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|ii", keywords,
-                                     &sizeobj, &texture_type, &usage, &format, &depth)) {
+    char *keywords[] = {"size", "texture_type", "usage", "format", "depth", "sample_count", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|iii", keywords,
+                                     &sizeobj, &texture_type, &usage, &format, &depth, &sample_count)) {
         return -1;
     }
     if (!pg_TwoIntsFromObj(sizeobj, &width, &height)) {
@@ -830,6 +835,7 @@ texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     self->texture_info.height = height;
     self->texture_info.layer_count_or_depth = depth;
     self->texture_info.num_levels = 1;
+    self->texture_info.sample_count = sample_count;
     self->texture_info.usage = usage;
     texture = SDL_CreateGPUTexture(device, &self->texture_info);
     if (texture == NULL) {
@@ -1486,6 +1492,21 @@ supports_swapchain_composition(PyObject *self, PyObject *args, PyObject *kwargs)
 }
 
 static PyObject *
+format_supports_sample_count(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    int format, sample_count;
+    char *keywords[] = {"format", "sample_count", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ii", keywords,
+                                     &format, &sample_count)) {
+        return NULL;
+    }
+    if (SDL_GPUTextureSupportsSampleCount(device, format, sample_count)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
+static PyObject *
 acquire_swapchain_texture(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     pgWindowObject *window;
@@ -1893,6 +1914,7 @@ static PyMethodDef gpu_methods[] = {
     {"get_swapchain_format", (PyCFunction)get_swapchain_format, METH_VARARGS | METH_KEYWORDS, NULL},
     {"set_swapchain_parameters", (PyCFunction)set_swapchain_parameters, METH_VARARGS | METH_KEYWORDS, NULL},
     {"supports_swapchain_composition", (PyCFunction)supports_swapchain_composition, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"format_supports_sample_count", (PyCFunction)format_supports_sample_count, METH_VARARGS | METH_KEYWORDS, NULL},
     {"acquire_swapchain_texture", (PyCFunction)acquire_swapchain_texture, METH_VARARGS | METH_KEYWORDS, NULL},
     {"blit_texture", (PyCFunction)blit_texture, METH_VARARGS | METH_KEYWORDS, NULL},
     {"push_data", (PyCFunction)push_data, METH_VARARGS | METH_KEYWORDS, NULL},
@@ -2079,6 +2101,10 @@ MODINIT_DEFINE(gpu)
     DEC_CONST(GPU_BLENDFACTOR_SRC_ALPHA_SATURATE);
     DEC_CONST(GPU_TRANSFERBUFFERUSAGE_UPLOAD);
     DEC_CONST(GPU_TRANSFERBUFFERUSAGE_DOWNLOAD);
+    DEC_CONST(GPU_SAMPLECOUNT_1);
+    DEC_CONST(GPU_SAMPLECOUNT_2);
+    DEC_CONST(GPU_SAMPLECOUNT_4);
+    DEC_CONST(GPU_SAMPLECOUNT_8);
     DEC_CONSTS_("POSITION_VERTEX", POSITION_VERTEX);
     DEC_CONSTS_("POSITION_COLOR_VERTEX", POSITION_COLOR_VERTEX);
     DEC_CONSTS_("POSITION_TEXTURE_VERTEX", POSITION_TEXTURE_VERTEX);
