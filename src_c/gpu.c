@@ -921,6 +921,16 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     Py_RETURN_NONE;
 }
 
+static PyObject *
+texture_generate_mipmaps(pgGPUTextureObject *self, PyObject *_null)
+{
+    if (cmdbuf == NULL) {
+        RAISERETURN(pgExc_SDLError, "command buffer is not acquired", NULL);
+    }
+    SDL_GenerateMipmapsForGPUTexture(cmdbuf, self->texture);
+    Py_RETURN_NONE;
+}
+
 static int
 texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -931,10 +941,11 @@ texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
     Uint32 depth = 1;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+    Uint32 num_levels = 1;
     PyObject *sizeobj = NULL;
-    char *keywords[] = {"size", "texture_type", "usage", "format", "depth", "sample_count", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|iii", keywords,
-                                     &sizeobj, &texture_type, &usage, &format, &depth, &sample_count)) {
+    char *keywords[] = {"size", "texture_type", "usage", "format", "depth", "sample_count", "num_levels", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|iiii", keywords,
+                                     &sizeobj, &texture_type, &usage, &format, &depth, &sample_count, &num_levels)) {
         return -1;
     }
     if (!pg_TwoIntsFromObj(sizeobj, &width, &height)) {
@@ -945,7 +956,7 @@ texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     self->texture_info.width = width;
     self->texture_info.height = height;
     self->texture_info.layer_count_or_depth = depth;
-    self->texture_info.num_levels = 1;
+    self->texture_info.num_levels = num_levels;
     self->texture_info.sample_count = sample_count;
     self->texture_info.usage = usage;
     texture = SDL_CreateGPUTexture(device, &self->texture_info);
@@ -1731,32 +1742,37 @@ blit_texture(PyObject *self, PyObject *args, PyObject *kwargs)
     int load_op = SDL_GPU_LOADOP_LOAD;
     int filter = SDL_GPU_FILTER_NEAREST;
     int flip_mode = SDL_FLIP_NONE;
+    int source_mip_level = 0, dest_mip_level = 0;
     char *keywords[] = {
         "source", "source_w", "source_h",
         "dest", "dest_w", "dest_h",
         "source_layer", "source_x", "source_y",
         "dest_layer", "dest_x", "dest_y",
-        "load_op", "filter", "flip_mode", NULL
+        "load_op", "filter", "flip_mode",
+        "source_mip_level", "dest_mip_level", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiiii", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!iiO!ii|iiiiiiiiiii", keywords,
                                      &pgGPUTexture_Type, &source,
                                      &source_w, &source_h,
                                      &pgGPUTexture_Type, &dest,
                                      &dest_w, &dest_h,
                                      &source_layer, &source_x, &source_y,
                                      &dest_layer, &dest_x, &dest_y,
-                                     &load_op, &filter, &flip_mode)) {
+                                     &load_op, &filter, &flip_mode,
+                                     &source_mip_level, &dest_mip_level)) {
         return NULL;
     }
     SDL_BlitGPUTexture(cmdbuf, &(SDL_GPUBlitInfo){
         .source.texture = source->texture,
         .source.layer_or_depth_plane = source_layer,
+        .source.mip_level = source_mip_level,
         .source.x = source_x,
         .source.y = source_y,
         .source.w = source_w,
         .source.h = source_h,
         .destination.texture = dest->texture,
         .destination.layer_or_depth_plane = dest_layer,
+        .destination.mip_level = dest_mip_level,
         .destination.x = dest_x,
         .destination.y = dest_y,
         .destination.w = dest_w,
@@ -1913,6 +1929,8 @@ static PyGetSetDef buffer_getset[] = {{NULL, 0, NULL, NULL, NULL}};
 static PyMethodDef texture_methods[] = {
     {"upload", (PyCFunction)texture_upload,
      METH_VARARGS | METH_KEYWORDS, NULL},
+    {"generate_mipmaps", (PyCFunction)texture_generate_mipmaps,
+     METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}
 };
 
