@@ -187,10 +187,13 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     pgGPUTextureObject *depth_stencil_texture = NULL;
     Uint32 layer = 0;
     int cycle = 0;
+    float depth_clear = 0;
+    SDL_GPUStoreOp depth_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPUStoreOp stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
     SDL_GPUTexture* swapchainTexture;
-    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", "depth_stencil_texture", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!O!", keywords,
-                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture, &pgGPUTexture_Type, &depth_stencil_texture)) {
+    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", "depth_stencil_texture", "depth_clear", "depth_store_op", "stencil_store_op", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!O!fii", keywords,
+                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture, &pgGPUTexture_Type, &depth_stencil_texture, &depth_clear, &depth_store_op, &stencil_store_op)) {
         return NULL;
     }
     if (window == NULL && texture == NULL) {
@@ -208,10 +211,10 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
         ds_info.texture = depth_stencil_texture->texture;
         ds_info.cycle = true;
         ds_info.load_op = SDL_GPU_LOADOP_CLEAR;
-        ds_info.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ds_info.store_op = depth_store_op;
         ds_info.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
-        ds_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-        ds_info.clear_depth = 0;
+        ds_info.stencil_store_op = stencil_store_op;
+        ds_info.clear_depth = depth_clear;
         ds_info.clear_stencil = 0;
         ds_info_ptr = &ds_info;
     }
@@ -269,7 +272,7 @@ render_pass_end(pgRenderPassObject *self, PyObject *_null)
 static PyObject *
 render_pass_draw_primitives(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
 {
-    int vertices, instances, vertex_offset = 0, indexed = 0, index_offset;
+    int vertices, instances, vertex_offset = 0, indexed = 0, index_offset = 0;
     char *keywords[] = {"vertices", "instances", "vertex_offset", "indexed", "index_offset", NULL};
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ii|ipi", keywords,
                                      &vertices, &instances, &vertex_offset, &indexed, &index_offset)) {
@@ -447,12 +450,13 @@ pipeline_fill_vertex_input_state(pgPipelineObject *self, BufferType vertex_input
 }
 
 static void
-pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GPUBlendFactor src_color_blendfactor, SDL_GPUBlendFactor src_alpha_blendfactor, SDL_GPUBlendFactor dst_color_blendfactor, SDL_GPUBlendFactor dst_alpha_blendfactor, SDL_GPUTextureFormat depth_stencil_format)
+pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GPUBlendFactor src_color_blendfactor, SDL_GPUBlendFactor src_alpha_blendfactor, SDL_GPUBlendFactor dst_color_blendfactor, SDL_GPUBlendFactor dst_alpha_blendfactor, SDL_GPUTextureFormat depth_stencil_format, SDL_GPUTextureFormat target_format)
 {
     SDL_GPUColorTargetDescription *color_target_descriptions = NULL;
+    SDL_GPUTextureFormat format = target_format ? target_format : SDL_GetGPUSwapchainTextureFormat(device, window->_win);
     if (src_color_blendfactor || src_alpha_blendfactor || dst_color_blendfactor || dst_alpha_blendfactor) {
         color_target_descriptions = (SDL_GPUColorTargetDescription *)calloc(1, sizeof(SDL_GPUColorTargetDescription));
-        color_target_descriptions->format = SDL_GetGPUSwapchainTextureFormat(device, window->_win);
+        color_target_descriptions->format = format;
         color_target_descriptions->blend_state.enable_blend = true;
         color_target_descriptions->blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         color_target_descriptions->blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -460,23 +464,17 @@ pipeline_fill_target_info(pgPipelineObject *self, pgWindowObject *window, SDL_GP
         color_target_descriptions->blend_state.src_alpha_blendfactor = src_alpha_blendfactor;
         color_target_descriptions->blend_state.dst_color_blendfactor = dst_color_blendfactor;
         color_target_descriptions->blend_state.dst_alpha_blendfactor = dst_alpha_blendfactor;
-        self->pipeline_info.target_info = (SDL_GPUGraphicsPipelineTargetInfo){
-            .num_color_targets = 1,
-            .color_target_descriptions = color_target_descriptions,
-            .has_depth_stencil_target = depth_stencil_format != 0,
-            .depth_stencil_format = depth_stencil_format
-        };
     }
     else {
-        self->pipeline_info.target_info = (SDL_GPUGraphicsPipelineTargetInfo){
-            .num_color_targets = 1,
-            .color_target_descriptions = (SDL_GPUColorTargetDescription[]){{
-                .format = SDL_GetGPUSwapchainTextureFormat(device, window->_win)
-            }},
-            .has_depth_stencil_target = depth_stencil_format != 0,
-            .depth_stencil_format = depth_stencil_format
-        };
+        color_target_descriptions = (SDL_GPUColorTargetDescription *)calloc(1, sizeof(SDL_GPUColorTargetDescription));
+        color_target_descriptions->format = format;
     }
+    self->pipeline_info.target_info = (SDL_GPUGraphicsPipelineTargetInfo){
+        .num_color_targets = 1,
+        .color_target_descriptions = color_target_descriptions,
+        .has_depth_stencil_target = depth_stencil_format != 0,
+        .depth_stencil_format = depth_stencil_format
+    };
 }
 
 static PyObject *
@@ -512,7 +510,7 @@ pipeline_bind(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
 static int
 pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
 {
-    pgWindowObject *window;
+    pgWindowObject *window = NULL;
     pgShaderObject *vertex_shader, *fragment_shader;
     SDL_GPUPrimitiveType primitive_type;
     SDL_GPUFillMode fill_mode = SDL_GPU_FILLMODE_FILL;
@@ -524,9 +522,10 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
     pgDepthStencilStateObject *depth_stencil_state = NULL;
     PyObject *depth_stencil_state_obj = NULL;
     SDL_GPUTextureFormat depth_stencil_format = 0;
-    char *keywords[] = {"window", "vertex_shader", "fragment_shader", "primitive_type", "fill_mode", "vertex_input_state", "cull_mode", "front_face", "src_color_blendfactor", "src_alpha_blendfactor", "dst_color_blendfactor", "dst_alpha_blendfactor", "sample_count", "depth_stencil_state", "depth_stencil_format", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!i|iiiiiiiiiOi", keywords,
-                                     &pgWindow_Type, &window, &pgShader_Type, &vertex_shader, &pgShader_Type, &fragment_shader, &primitive_type, &fill_mode, &vertex_input_state, &cull_mode, &front_face, &src_color_blendfactor, &src_alpha_blendfactor, &dst_color_blendfactor, &dst_alpha_blendfactor, &sample_count, &depth_stencil_state_obj, &depth_stencil_format)) {
+    SDL_GPUTextureFormat target_format = 0;
+    char *keywords[] = {"window", "vertex_shader", "fragment_shader", "primitive_type", "fill_mode", "vertex_input_state", "cull_mode", "front_face", "src_color_blendfactor", "src_alpha_blendfactor", "dst_color_blendfactor", "dst_alpha_blendfactor", "sample_count", "depth_stencil_state", "depth_stencil_format", "target_format", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!i|iiiiiiiiiOii", keywords,
+                                     &pgWindow_Type, &window, &pgShader_Type, &vertex_shader, &pgShader_Type, &fragment_shader, &primitive_type, &fill_mode, &vertex_input_state, &cull_mode, &front_face, &src_color_blendfactor, &src_alpha_blendfactor, &dst_color_blendfactor, &dst_alpha_blendfactor, &sample_count, &depth_stencil_state_obj, &depth_stencil_format, &target_format)) {
         return -1;
     }
     if (depth_stencil_state_obj != NULL && depth_stencil_state_obj != Py_None) {
@@ -536,7 +535,7 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
         }
         depth_stencil_state = (pgDepthStencilStateObject *)depth_stencil_state_obj;
     }
-    pipeline_fill_target_info(self, window, src_color_blendfactor, src_alpha_blendfactor, dst_color_blendfactor, dst_alpha_blendfactor, depth_stencil_format);
+    pipeline_fill_target_info(self, window, src_color_blendfactor, src_alpha_blendfactor, dst_color_blendfactor, dst_alpha_blendfactor, depth_stencil_format, target_format);
     self->pipeline_info.vertex_shader = vertex_shader->shader;
     self->pipeline_info.fragment_shader = fragment_shader->shader;
     self->pipeline_info.primitive_type = primitive_type;
@@ -554,9 +553,7 @@ pipeline_init(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
 
     free((void*)self->pipeline_info.vertex_input_state.vertex_buffer_descriptions);
     free((void*)self->pipeline_info.vertex_input_state.vertex_attributes);
-    if (src_color_blendfactor || src_alpha_blendfactor || dst_color_blendfactor || dst_alpha_blendfactor) {
-        free((void*)self->pipeline_info.target_info.color_target_descriptions);
-    }
+    free((void*)self->pipeline_info.target_info.color_target_descriptions);
     if (self->pipeline == NULL) {
         RAISERETURN(pgExc_SDLError, SDL_GetError(), -1);
     }
@@ -984,13 +981,35 @@ static PyObject *
 sampler_bind(pgSamplerObject *self, PyObject *args, PyObject *kwargs)
 {
     pgRenderPassObject *render_pass;
-    pgGPUTextureObject *texture;
-    char *keywords[] = {"render_pass", "texture", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!", keywords,
-                                     &pgRenderPass_Type, &render_pass, &pgGPUTexture_Type, &texture)) {
+    PyObject *textures;
+    char *keywords[] = {"render_pass", "textures", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O", keywords,
+                                     &pgRenderPass_Type, &render_pass, &textures)) {
         return NULL;
     }
-    SDL_BindGPUFragmentSamplers(render_pass->render_pass, 0, &(SDL_GPUTextureSamplerBinding){ .texture = texture->texture, .sampler = self->sampler }, 1);
+    if (pgGPUTexture_Check(textures)) {
+        SDL_BindGPUFragmentSamplers(render_pass->render_pass, 0, &(SDL_GPUTextureSamplerBinding){ .texture = ((pgGPUTextureObject *)textures)->texture, .sampler = self->sampler }, 1);
+    }
+    else if (PySequence_Check(textures)) {
+        Uint32 count = (Uint32)PySequence_Length(textures);
+        SDL_GPUTextureSamplerBinding *bindings = (SDL_GPUTextureSamplerBinding *)malloc(count * sizeof(SDL_GPUTextureSamplerBinding));
+        for (Uint32 i = 0; i < count; i++) {
+            PyObject *item = PySequence_GetItem(textures, i);
+            if (!pgGPUTexture_Check(item)) {
+                Py_DECREF(item);
+                free(bindings);
+                return RAISE(PyExc_TypeError, "textures must contain Texture objects");
+            }
+            bindings[i].texture = ((pgGPUTextureObject *)item)->texture;
+            bindings[i].sampler = self->sampler;
+            Py_DECREF(item);
+        }
+        SDL_BindGPUFragmentSamplers(render_pass->render_pass, 0, bindings, count);
+        free(bindings);
+    }
+    else {
+        return RAISE(PyExc_TypeError, "textures must be a Texture or a list of Textures");
+    }
     Py_RETURN_NONE;
 }
 
