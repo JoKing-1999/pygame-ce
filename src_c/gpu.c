@@ -487,9 +487,10 @@ pipeline_bind(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
 {
     pgRenderPassObject *render_pass;
     PyObject *storage_textures = NULL;
-    char *keywords[] = {"render_pass", "storage_textures", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|O", keywords,
-                                     &pgRenderPass_Type, &render_pass, &storage_textures)) {
+    PyObject *vertex_storage_buffers = NULL;
+    char *keywords[] = {"render_pass", "storage_textures", "vertex_storage_buffers", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|OO", keywords,
+                                     &pgRenderPass_Type, &render_pass, &storage_textures, &vertex_storage_buffers)) {
         return NULL;
     }
     SDL_BindGPUGraphicsPipeline(render_pass->render_pass, self->pipeline);
@@ -508,6 +509,22 @@ pipeline_bind(pgPipelineObject *self, PyObject *args, PyObject *kwargs)
         }
         SDL_BindGPUFragmentStorageTextures(render_pass->render_pass, 0, tex_array, count);
         free(tex_array);
+    }
+    if (vertex_storage_buffers != NULL && vertex_storage_buffers != Py_None) {
+        Uint32 count = (Uint32)PySequence_Length(vertex_storage_buffers);
+        SDL_GPUBuffer **buf_array = (SDL_GPUBuffer **)malloc(count * sizeof(SDL_GPUBuffer *));
+        for (Uint32 i = 0; i < count; i++) {
+            PyObject *item = PySequence_GetItem(vertex_storage_buffers, i);
+            if (!pgBuffer_Check(item)) {
+                Py_DECREF(item);
+                free(buf_array);
+                return RAISE(PyExc_TypeError, "vertex_storage_buffers must contain Buffer objects");
+            }
+            buf_array[i] = ((pgBufferObject *)item)->buffer;
+            Py_DECREF(item);
+        }
+        SDL_BindGPUVertexStorageBuffers(render_pass->render_pass, 0, buf_array, count);
+        free(buf_array);
     }
     Py_RETURN_NONE;
 }
