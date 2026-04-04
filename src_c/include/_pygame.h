@@ -620,6 +620,7 @@ typedef struct {
     SDL_GPUBufferUsageFlags usage;
     BufferType buffer_type;
     int no_of_elements;
+    SDL_GPUIndexElementSize index_element_size;
 } pgBufferObject;
 
 typedef struct {
@@ -674,6 +675,13 @@ typedef struct {
     PyObject_HEAD
     SDL_GPUDepthStencilState state;
 } pgDepthStencilStateObject;
+
+typedef struct {
+    PyObject_HEAD
+    Uint32 pitch;
+    Uint32 num_attributes;
+    SDL_GPUVertexAttribute *attributes;
+} pgVertexInputStateObject;
 
 #ifndef PYGAMEAPI_GPU_INTERNAL
 #define import_pygame_gpu() IMPORT_PYGAME_MODULE(gpu)
