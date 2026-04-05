@@ -4,6 +4,8 @@
 
 #include "pgcompat.h"
 
+#include "gpu.h"
+
 /* Context */
 static SDL_GPUDevice *device;
 
