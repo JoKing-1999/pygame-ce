@@ -683,6 +683,15 @@ typedef struct {
     SDL_GPUVertexAttribute *attributes;
 } pgVertexInputStateObject;
 
+typedef struct {
+    PyObject_HEAD
+    pgGPUTextureObject *texture;
+    Uint32 mip_level;
+    Uint32 layer;
+    Uint32 x, y, z;
+    Uint32 w, h, d;
+} pgTextureRegionObject;
+
 #ifndef PYGAMEAPI_GPU_INTERNAL
 #define import_pygame_gpu() IMPORT_PYGAME_MODULE(gpu)
 #endif

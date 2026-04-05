@@ -41,6 +41,8 @@ static PyTypeObject pgDepthStencilState_Type;
 
 static PyTypeObject pgVertexInputState_Type;
 
+static PyTypeObject pgTextureRegion_Type;
+
 #define pgShader_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgShader_Type))
 
@@ -79,6 +81,9 @@ static PyTypeObject pgVertexInputState_Type;
 
 #define pgVertexInputState_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgVertexInputState_Type))
+
+#define pgTextureRegion_Check(x) \
+    (PyObject_IsInstance((x), (PyObject *)&pgTextureRegion_Type))
 
 #define DEC_CONSTS_(x, y)                           \
     if (PyModule_AddIntConstant(module, x, (int)y)) \
@@ -981,6 +986,36 @@ texture_generate_mipmaps(pgGPUTextureObject *self, PyObject *_null)
     Py_RETURN_NONE;
 }
 
+static PyObject *
+texture_get_region(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
+{
+    Uint32 mip_level = 0, layer = 0;
+    Uint32 x = 0, y = 0, z = 0;
+    Uint32 w = 0, h = 0, d = 1;
+    char *keywords[] = {"mip_level", "layer",
+                        "x", "y", "z", "w", "h", "d", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|IIIIIIII", keywords,
+                                     &mip_level, &layer,
+                                     &x, &y, &z, &w, &h, &d)) {
+        return NULL;
+    }
+    pgTextureRegionObject *region = PyObject_New(pgTextureRegionObject, &pgTextureRegion_Type);
+    if (region == NULL) {
+        return NULL;
+    }
+    Py_INCREF(self);
+    region->texture = self;
+    region->mip_level = mip_level;
+    region->layer = layer;
+    region->x = x;
+    region->y = y;
+    region->z = z;
+    region->w = w ? w : (Uint32)self->width;
+    region->h = h ? h : (Uint32)self->height;
+    region->d = d;
+    return (PyObject *)region;
+}
+
 static int
 texture_init(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -1362,6 +1397,61 @@ compute_pass_dealloc(pgComputePassObject *self, PyObject *_null)
 }
 
 /* CopyPass implementation */
+
+/* Fills an SDL_GPUTextureRegion from either a Texture (full) or TextureRegion (sub). Returns 0 on success, -1 with exception on bad type. */
+static int
+fill_texture_region(PyObject *obj, SDL_GPUTextureRegion *out)
+{
+    if (pgTextureRegion_Check(obj)) {
+        pgTextureRegionObject *r = (pgTextureRegionObject *)obj;
+        out->texture = r->texture->texture;
+        out->mip_level = r->mip_level;
+        out->layer = r->layer;
+        out->x = r->x;
+        out->y = r->y;
+        out->z = r->z;
+        out->w = r->w;
+        out->h = r->h;
+        out->d = r->d;
+        return 0;
+    }
+    if (pgGPUTexture_Check(obj)) {
+        pgGPUTextureObject *t = (pgGPUTextureObject *)obj;
+        *out = (SDL_GPUTextureRegion){
+            .texture = t->texture,
+            .w = t->width,
+            .h = t->height,
+            .d = 1
+        };
+        return 0;
+    }
+    PyErr_SetString(PyExc_TypeError, "expected Texture or TextureRegion");
+    return -1;
+}
+
+/* Fills an SDL_GPUTextureLocation from either a Texture (full) or TextureRegion (location fields only). Returns 0 on success, -1 with exception on bad type. */
+static int
+fill_texture_location(PyObject *obj, SDL_GPUTextureLocation *out)
+{
+    if (pgTextureRegion_Check(obj)) {
+        pgTextureRegionObject *r = (pgTextureRegionObject *)obj;
+        out->texture = r->texture->texture;
+        out->mip_level = r->mip_level;
+        out->layer = r->layer;
+        out->x = r->x;
+        out->y = r->y;
+        out->z = r->z;
+        return 0;
+    }
+    if (pgGPUTexture_Check(obj)) {
+        pgGPUTextureObject *t = (pgGPUTextureObject *)obj;
+        *out = (SDL_GPUTextureLocation){.texture = t->texture};
+        return 0;
+    }
+    PyErr_SetString(PyExc_TypeError, "expected Texture or TextureRegion");
+    return -1;
+}
+
 static PyObject *
 copy_pass_begin(pgCopyPassObject *self, PyObject *_null)
 {
@@ -1389,15 +1479,18 @@ static PyObject *
 copy_pass_upload_to_texture(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
 {
     pgTransferBufferObject *tb;
-    pgGPUTextureObject *texture;
+    PyObject *region_obj;
     int cycle = 0;
     Uint32 offset = 0;
-    Uint32 layer = 0;
-    char *keywords[] = {"transfer_buffer", "texture", "cycle", "offset", "layer", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!|pII", keywords,
+    char *keywords[] = {"transfer_buffer", "region", "cycle", "offset", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|pI", keywords,
                                      &pgTransferBuffer_Type, &tb,
-                                     &pgGPUTexture_Type, &texture,
-                                     &cycle, &offset, &layer)) {
+                                     &region_obj,
+                                     &cycle, &offset)) {
+        return NULL;
+    }
+    SDL_GPUTextureRegion region;
+    if (fill_texture_region(region_obj, &region) < 0) {
         return NULL;
     }
     SDL_UploadToGPUTexture(
@@ -1406,13 +1499,7 @@ copy_pass_upload_to_texture(pgCopyPassObject *self, PyObject *args, PyObject *kw
             .transfer_buffer = tb->transfer_buffer,
             .offset = offset
         },
-        &(SDL_GPUTextureRegion){
-            .texture = texture->texture,
-            .layer = layer,
-            .w = texture->width,
-            .h = texture->height,
-            .d = 1
-        },
+        &region,
         cycle
     );
     Py_RETURN_NONE;
@@ -1451,25 +1538,26 @@ copy_pass_upload_to_buffer(pgCopyPassObject *self, PyObject *args, PyObject *kwa
 static PyObject *
 copy_pass_download_from_texture(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
 {
-    pgGPUTextureObject *texture;
+    PyObject *region_obj;
     pgTransferBufferObject *tb;
-    char *keywords[] = {"texture", "transfer_buffer", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!", keywords,
-                                     &pgGPUTexture_Type, &texture,
-                                     &pgTransferBuffer_Type, &tb)) {
+    Uint32 offset = 0;
+    char *keywords[] = {"region", "transfer_buffer", "offset", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO!|I", keywords,
+                                     &region_obj,
+                                     &pgTransferBuffer_Type, &tb,
+                                     &offset)) {
+        return NULL;
+    }
+    SDL_GPUTextureRegion region;
+    if (fill_texture_region(region_obj, &region) < 0) {
         return NULL;
     }
     SDL_DownloadFromGPUTexture(
         self->copy_pass,
-        &(SDL_GPUTextureRegion){
-            .texture = texture->texture,
-            .w = texture->width,
-            .h = texture->height,
-            .d = 1
-        },
+        &region,
         &(SDL_GPUTextureTransferInfo){
             .transfer_buffer = tb->transfer_buffer,
-            .offset = 0
+            .offset = offset
         }
     );
     Py_RETURN_NONE;
@@ -1506,21 +1594,24 @@ copy_pass_download_from_buffer(pgCopyPassObject *self, PyObject *args, PyObject 
 static PyObject *
 copy_pass_copy_texture_to_texture(pgCopyPassObject *self, PyObject *args, PyObject *kwargs)
 {
-    pgGPUTextureObject *source, *dest;
-    Uint32 w, h;
+    PyObject *source_obj, *dest_obj;
+    Uint32 w, h, d = 1;
     int cycle = 0;
-    char *keywords[] = {"source", "dest", "w", "h", "cycle", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!II|p", keywords,
-                                     &pgGPUTexture_Type, &source,
-                                     &pgGPUTexture_Type, &dest,
-                                     &w, &h, &cycle)) {
+    char *keywords[] = {"source", "dest", "w", "h", "d", "cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOII|Ip", keywords,
+                                     &source_obj, &dest_obj,
+                                     &w, &h, &d, &cycle)) {
+        return NULL;
+    }
+    SDL_GPUTextureLocation src_loc, dst_loc;
+    if (fill_texture_location(source_obj, &src_loc) < 0 ||
+        fill_texture_location(dest_obj, &dst_loc) < 0) {
         return NULL;
     }
     SDL_CopyGPUTextureToTexture(
         self->copy_pass,
-        &(SDL_GPUTextureLocation){.texture = source->texture},
-        &(SDL_GPUTextureLocation){.texture = dest->texture},
-        w, h, 1, cycle
+        &src_loc, &dst_loc,
+        w, h, d, cycle
     );
     Py_RETURN_NONE;
 }
@@ -1726,6 +1817,42 @@ static void
 vertex_input_state_dealloc(pgVertexInputStateObject *self, PyObject *_null)
 {
     free(self->attributes);
+    Py_TYPE(self)->tp_free(self);
+}
+
+/* TextureRegion implementation */
+static int
+texture_region_init(pgTextureRegionObject *self, PyObject *args, PyObject *kwargs)
+{
+    pgGPUTextureObject *texture;
+    Uint32 mip_level = 0, layer = 0;
+    Uint32 x = 0, y = 0, z = 0;
+    Uint32 w = 0, h = 0, d = 1;
+    char *keywords[] = {"texture", "mip_level", "layer",
+                        "x", "y", "z", "w", "h", "d", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|IIIIIIII", keywords,
+                                     &pgGPUTexture_Type, &texture,
+                                     &mip_level, &layer,
+                                     &x, &y, &z, &w, &h, &d)) {
+        return -1;
+    }
+    Py_INCREF(texture);
+    self->texture = texture;
+    self->mip_level = mip_level;
+    self->layer = layer;
+    self->x = x;
+    self->y = y;
+    self->z = z;
+    self->w = w ? w : (Uint32)texture->width;
+    self->h = h ? h : (Uint32)texture->height;
+    self->d = d;
+    return 0;
+}
+
+static void
+texture_region_dealloc(pgTextureRegionObject *self, PyObject *_null)
+{
+    Py_XDECREF(self->texture);
     Py_TYPE(self)->tp_free(self);
 }
 
@@ -2104,6 +2231,8 @@ static PyMethodDef texture_methods[] = {
      METH_VARARGS | METH_KEYWORDS, NULL},
     {"generate_mipmaps", (PyCFunction)texture_generate_mipmaps,
      METH_NOARGS, NULL},
+    {"get_region", (PyCFunction)texture_get_region,
+     METH_VARARGS | METH_KEYWORDS, NULL},
     {NULL, NULL, 0, NULL}
 };
 
@@ -2322,6 +2451,22 @@ static PyTypeObject pgVertexInputState_Type = {
     .tp_getset = vertex_input_state_getset
 };
 
+static PyMethodDef texture_region_methods[] = {
+    {NULL, NULL, 0, NULL}
+};
+
+static PyGetSetDef texture_region_getset[] = {{NULL, 0, NULL, NULL, NULL}};
+
+static PyTypeObject pgTextureRegion_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.gpu.TextureRegion",
+    .tp_basicsize = sizeof(pgTextureRegionObject),
+    .tp_dealloc = (destructor)texture_region_dealloc,
+    .tp_methods = texture_region_methods,
+    .tp_init = (initproc)texture_region_init,
+    .tp_new = PyType_GenericNew,
+    .tp_getset = texture_region_getset
+};
+
 static PyMethodDef gpu_methods[] = {
     {"init", (PyCFunction)init, METH_NOARGS, NULL},
     {"claim_window", (PyCFunction)claim_window, METH_VARARGS | METH_KEYWORDS, NULL},
@@ -2452,6 +2597,11 @@ MODINIT_DEFINE(gpu)
     }
 
     if (PyModule_AddType(module, &pgVertexInputState_Type)) {
+        Py_XDECREF(module);
+        return NULL;
+    }
+
+    if (PyModule_AddType(module, &pgTextureRegion_Type)) {
         Py_XDECREF(module);
         return NULL;
     }
