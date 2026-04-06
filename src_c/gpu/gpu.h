@@ -5,6 +5,12 @@
 #ifndef GPU_H
 #define GPU_H
 
+#include "pygame.h"
+
+#include "pgcompat.h"
+
+#include <SDL3_shadercross/SDL_shadercross.h>
+
 typedef struct {
     float x, y, z;
 } PositionVertex;
@@ -107,5 +113,7 @@ typedef struct {
     Uint32 x, y, z;
     Uint32 w, h, d;
 } pgTextureRegionObject;
+
+int gpu_register_constants(PyObject *module);
 
 #endif /* GPU_H */

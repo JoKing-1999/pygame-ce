@@ -225,6 +225,7 @@ if plat == 'win'
         sdl_image_dir = prebuilt_dir / '@0@-@1@'.format(sdl_image, sdl_image_ver)
         sdl_mixer_dir = prebuilt_dir / '@0@-@1@'.format(sdl_mixer, sdl_mixer_ver)
         sdl_ttf_dir = prebuilt_dir / '@0@-@1@'.format(sdl_ttf, sdl_ttf_ver)
+        sdl_shadercross_dir = prebuilt_dir / 'SDL3_shadercross-3.0.0'
         common_lib_dir = prebuilt_dir / 'lib'
 
         # download prebuilts (uses legacy buildconfig code)
@@ -301,6 +302,19 @@ if plat == 'win'
             pg_inc_dirs += fs.relative_to(sdl_ttf_dir / 'include', base_dir)
             pg_lib_dirs += sdl_ttf_lib_dir
             dlls += sdl_ttf_lib_dir / '@0@.dll'.format(sdl_ttf)
+        endif
+
+        # SDL_shadercross (SDL3 only, manual prebuilt)
+        if sdl_api == 3 and fs.is_dir(sdl_shadercross_dir)
+            sdl_shadercross_lib_dir = sdl_shadercross_dir / 'lib' / arch_suffix
+            pg_inc_dirs += fs.relative_to(sdl_shadercross_dir / 'include', base_dir)
+            pg_lib_dirs += sdl_shadercross_lib_dir
+            dlls += [
+                sdl_shadercross_lib_dir / 'SDL3_shadercross.dll',
+                sdl_shadercross_lib_dir / 'spirv-cross-c-shared.dll',
+                sdl_shadercross_lib_dir / 'dxcompiler.dll',
+                sdl_shadercross_lib_dir / 'dxil.dll',
+            ]
         endif
 
         # freetype, portmidi and porttime
@@ -431,6 +445,18 @@ if not sdl_ttf_dep.found()
             sdl_ttf,
             dirs: pg_lib_dirs,
             required: get_option('font'),
+        ),
+    )
+endif
+
+sdl_shadercross_dep = dependency('SDL3_shadercross', required: false)
+if not sdl_shadercross_dep.found()
+    sdl_shadercross_dep = declare_dependency(
+        include_directories: pg_inc_dirs,
+        dependencies: cc.find_library(
+            'SDL3_shadercross',
+            dirs: pg_lib_dirs,
+            required: false,
         ),
     )
 endif

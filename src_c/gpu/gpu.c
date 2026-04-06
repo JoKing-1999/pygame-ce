@@ -1,9 +1,5 @@
 #define PYGAMEAPI_GPU_INTERNAL
 
-#include "pygame.h"
-
-#include "pgcompat.h"
-
 #include "gpu.h"
 
 /* Context */
@@ -86,14 +82,6 @@ static PyTypeObject pgTextureRegion_Type;
 
 #define pgTextureRegion_Check(x) \
     (PyObject_IsInstance((x), (PyObject *)&pgTextureRegion_Type))
-
-#define DEC_CONSTS_(x, y)                           \
-    if (PyModule_AddIntConstant(module, x, (int)y)) \
-    {                                               \
-        Py_DECREF(module);                          \
-        return NULL;                                \
-    }
-#define DEC_CONST(x) DEC_CONSTS_(#x, SDL_##x)
 
 static int
 acquire_command_buffer()
@@ -1869,6 +1857,11 @@ init(PyObject *self, PyObject *args, PyObject *kwargs)
     if (device == NULL) {
         return RAISE(pgExc_SDLError, SDL_GetError());
     }
+    if (!SDL_ShaderCross_Init()) {
+        SDL_DestroyGPUDevice(device);
+        device = NULL;
+        return RAISE(pgExc_SDLError, "Failed to initialize SDL_ShaderCross");
+    }
     Py_RETURN_NONE;
 }
 
@@ -2177,9 +2170,74 @@ set_allowed_frames_in_flight(PyObject *self, PyObject *args)
 }
 
 static PyObject *
+compile_shader(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    const char *source_file, *output_file;
+    int stage;
+    char *keywords[] = {"source", "output", "stage", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ssi", keywords,
+                                     &source_file, &output_file, &stage)) {
+        return NULL;
+    }
+
+    /* Read HLSL source file */
+    FILE *f = fopen(source_file, "rb");
+    if (!f) {
+        return RAISE(pgExc_SDLError, "Unable to open source shader file");
+    }
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *source = (char *)malloc(file_size + 1);
+    fread(source, 1, file_size, f);
+    fclose(f);
+    source[file_size] = '\0';
+
+    /* Map SDL_GPU_SHADERSTAGE to SDL_ShaderCross_ShaderStage */
+    SDL_ShaderCross_ShaderStage sc_stage;
+    if (stage == SDL_GPU_SHADERSTAGE_VERTEX) {
+        sc_stage = SDL_SHADERCROSS_SHADERSTAGE_VERTEX;
+    } else if (stage == SDL_GPU_SHADERSTAGE_FRAGMENT) {
+        sc_stage = SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT;
+    } else {
+        free(source);
+        return RAISE(pgExc_SDLError, "Invalid shader stage");
+    }
+
+    /* Compile HLSL to SPIRV */
+    SDL_ShaderCross_HLSL_Info info = {
+        .source = source,
+        .entrypoint = "main",
+        .include_dir = NULL,
+        .defines = NULL,
+        .shader_stage = sc_stage,
+        .props = 0
+    };
+    size_t spirv_size = 0;
+    void *spirv = SDL_ShaderCross_CompileSPIRVFromHLSL(&info, &spirv_size);
+    free(source);
+    if (!spirv) {
+        return RAISE(pgExc_SDLError, SDL_GetError());
+    }
+
+    /* Write SPIRV to output file */
+    FILE *out = fopen(output_file, "wb");
+    if (!out) {
+        SDL_free(spirv);
+        return RAISE(pgExc_SDLError, "Unable to open output file for writing");
+    }
+    fwrite(spirv, 1, spirv_size, out);
+    fclose(out);
+    SDL_free(spirv);
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *
 quit(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     if (device != NULL) {
+        SDL_ShaderCross_Quit();
         SDL_DestroyGPUDevice(device);
         device = NULL;
     }
@@ -2485,6 +2543,7 @@ static PyMethodDef gpu_methods[] = {
     {"submit_and_acquire_fence", (PyCFunction)submit_and_acquire_fence, METH_NOARGS, NULL},
     {"wait_for_fences", (PyCFunction)wait_for_fences, METH_VARARGS | METH_KEYWORDS, NULL},
     {"set_allowed_frames_in_flight", (PyCFunction)set_allowed_frames_in_flight, METH_VARARGS, NULL},
+    {"compile_shader", (PyCFunction)compile_shader, METH_VARARGS | METH_KEYWORDS, NULL},
     {"quit", (PyCFunction)quit, METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}
 };
@@ -2608,146 +2667,10 @@ MODINIT_DEFINE(gpu)
         return NULL;
     }
 
-    DEC_CONST(GPU_SHADERSTAGE_VERTEX);
-    DEC_CONST(GPU_SHADERSTAGE_FRAGMENT);
-    DEC_CONST(GPU_LOADOP_LOAD);
-    DEC_CONST(GPU_LOADOP_CLEAR);
-    DEC_CONST(GPU_LOADOP_DONT_CARE);
-    DEC_CONST(GPU_STOREOP_STORE);
-    DEC_CONST(GPU_STOREOP_DONT_CARE);
-    DEC_CONST(GPU_STOREOP_RESOLVE);
-    DEC_CONST(GPU_STOREOP_RESOLVE_AND_STORE);
-    DEC_CONST(GPU_PRIMITIVETYPE_TRIANGLELIST);
-    DEC_CONST(GPU_PRIMITIVETYPE_TRIANGLESTRIP);
-    DEC_CONST(GPU_PRIMITIVETYPE_LINELIST);
-    DEC_CONST(GPU_PRIMITIVETYPE_LINESTRIP);
-    DEC_CONST(GPU_PRIMITIVETYPE_POINTLIST);
-    DEC_CONST(GPU_FILLMODE_FILL);
-    DEC_CONST(GPU_FILLMODE_LINE);
-    DEC_CONST(GPU_BUFFERUSAGE_VERTEX);
-    DEC_CONST(GPU_BUFFERUSAGE_INDEX);
-    DEC_CONST(GPU_BUFFERUSAGE_INDIRECT);
-    DEC_CONST(GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
-    DEC_CONST(GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ);
-    DEC_CONST(GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE);
-    DEC_CONST(GPU_INDEXELEMENTSIZE_16BIT);
-    DEC_CONST(GPU_INDEXELEMENTSIZE_32BIT);
-    DEC_CONST(GPU_CULLMODE_NONE);
-    DEC_CONST(GPU_CULLMODE_FRONT);
-    DEC_CONST(GPU_CULLMODE_BACK);
-    DEC_CONST(GPU_FRONTFACE_COUNTER_CLOCKWISE);
-    DEC_CONST(GPU_FRONTFACE_CLOCKWISE);
-    DEC_CONST(GPU_FILTER_NEAREST);
-    DEC_CONST(GPU_FILTER_LINEAR);
-    DEC_CONST(GPU_SAMPLERMIPMAPMODE_NEAREST);
-    DEC_CONST(GPU_SAMPLERMIPMAPMODE_LINEAR);
-    DEC_CONST(GPU_SAMPLERADDRESSMODE_REPEAT);
-    DEC_CONST(GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT);
-    DEC_CONST(GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
-    DEC_CONST(GPU_TEXTURETYPE_2D);
-    DEC_CONST(GPU_TEXTURETYPE_2D_ARRAY);
-    DEC_CONST(GPU_TEXTURETYPE_3D);
-    DEC_CONST(GPU_TEXTURETYPE_CUBE);
-    DEC_CONST(GPU_TEXTURETYPE_CUBE_ARRAY);
-    DEC_CONST(GPU_TEXTUREUSAGE_SAMPLER);
-    DEC_CONST(GPU_TEXTUREUSAGE_COLOR_TARGET);
-    DEC_CONST(GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
-    DEC_CONST(GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ);
-    DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ);
-    DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
-    DEC_CONST(GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE);
-    DEC_CONST(GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
-    DEC_CONST(GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT);
-    /* BCn compressed formats */
-    DEC_CONST(GPU_TEXTUREFORMAT_BC1_RGBA_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC2_RGBA_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC3_RGBA_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC4_R_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC5_RG_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC6H_RGB_FLOAT);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC6H_RGB_UFLOAT);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC7_RGBA_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC1_RGBA_UNORM_SRGB);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC2_RGBA_UNORM_SRGB);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC3_RGBA_UNORM_SRGB);
-    DEC_CONST(GPU_TEXTUREFORMAT_BC7_RGBA_UNORM_SRGB);
-    /* ASTC compressed formats */
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_4x4_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_5x4_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_5x5_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_6x5_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_6x6_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_8x5_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_8x6_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_8x8_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_10x5_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_10x6_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_10x8_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_10x10_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_12x10_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_ASTC_12x12_UNORM);
-    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_SDR);
-    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_SDR_LINEAR);
-    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR);
-    DEC_CONST(GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084);
-    DEC_CONST(GPU_PRESENTMODE_VSYNC);
-    DEC_CONST(GPU_PRESENTMODE_MAILBOX);
-    DEC_CONST(GPU_PRESENTMODE_IMMEDIATE);
-    DEC_CONST(GPU_BLENDFACTOR_ZERO);
-    DEC_CONST(GPU_BLENDFACTOR_ONE);
-    DEC_CONST(GPU_BLENDFACTOR_SRC_COLOR);
-    DEC_CONST(GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR);
-    DEC_CONST(GPU_BLENDFACTOR_DST_COLOR);
-    DEC_CONST(GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR);
-    DEC_CONST(GPU_BLENDFACTOR_SRC_ALPHA);
-    DEC_CONST(GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA);
-    DEC_CONST(GPU_BLENDFACTOR_DST_ALPHA);
-    DEC_CONST(GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA);
-    DEC_CONST(GPU_BLENDFACTOR_CONSTANT_COLOR);
-    DEC_CONST(GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR);
-    DEC_CONST(GPU_BLENDFACTOR_SRC_ALPHA_SATURATE);
-    DEC_CONST(GPU_TRANSFERBUFFERUSAGE_UPLOAD);
-    DEC_CONST(GPU_TRANSFERBUFFERUSAGE_DOWNLOAD);
-    DEC_CONST(GPU_SAMPLECOUNT_1);
-    DEC_CONST(GPU_SAMPLECOUNT_2);
-    DEC_CONST(GPU_SAMPLECOUNT_4);
-    DEC_CONST(GPU_SAMPLECOUNT_8);
-    DEC_CONST(GPU_TEXTUREFORMAT_D16_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_D24_UNORM);
-    DEC_CONST(GPU_TEXTUREFORMAT_D32_FLOAT);
-    DEC_CONST(GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT);
-    DEC_CONST(GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT);
-    DEC_CONST(GPU_COMPAREOP_INVALID);
-    DEC_CONST(GPU_COMPAREOP_NEVER);
-    DEC_CONST(GPU_COMPAREOP_LESS);
-    DEC_CONST(GPU_COMPAREOP_EQUAL);
-    DEC_CONST(GPU_COMPAREOP_LESS_OR_EQUAL);
-    DEC_CONST(GPU_COMPAREOP_GREATER);
-    DEC_CONST(GPU_COMPAREOP_NOT_EQUAL);
-    DEC_CONST(GPU_COMPAREOP_GREATER_OR_EQUAL);
-    DEC_CONST(GPU_COMPAREOP_ALWAYS);
-    DEC_CONST(GPU_STENCILOP_INVALID);
-    DEC_CONST(GPU_STENCILOP_KEEP);
-    DEC_CONST(GPU_STENCILOP_ZERO);
-    DEC_CONST(GPU_STENCILOP_REPLACE);
-    DEC_CONST(GPU_STENCILOP_INCREMENT_AND_CLAMP);
-    DEC_CONST(GPU_STENCILOP_DECREMENT_AND_CLAMP);
-    DEC_CONST(GPU_STENCILOP_INVERT);
-    DEC_CONST(GPU_STENCILOP_INCREMENT_AND_WRAP);
-    DEC_CONST(GPU_STENCILOP_DECREMENT_AND_WRAP);
-    DEC_CONSTS_("POSITION_VERTEX", POSITION_VERTEX);
-    DEC_CONSTS_("POSITION_COLOR_VERTEX", POSITION_COLOR_VERTEX);
-    DEC_CONSTS_("POSITION_TEXTURE_VERTEX", POSITION_TEXTURE_VERTEX);
-    DEC_CONSTS_("PUSH_VERTEX", PUSH_VERTEX);
-    DEC_CONSTS_("PUSH_FRAGMENT", PUSH_FRAGMENT);
-    DEC_CONSTS_("PUSH_UNIFORM", PUSH_UNIFORM);
-    DEC_CONST(GPU_VERTEXELEMENTFORMAT_FLOAT);
-    DEC_CONST(GPU_VERTEXELEMENTFORMAT_FLOAT2);
-    DEC_CONST(GPU_VERTEXELEMENTFORMAT_FLOAT3);
-    DEC_CONST(GPU_VERTEXELEMENTFORMAT_FLOAT4);
-    DEC_CONST(GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM);
+    if (gpu_register_constants(module)) {
+        Py_DECREF(module);
+        return NULL;
+    }
 
     apiobj = encapsulate_api(c_api, "gpu");
     if (PyModule_AddObject(module, PYGAMEAPI_LOCAL_ENTRY, apiobj)) {
