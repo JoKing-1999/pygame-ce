@@ -114,7 +114,7 @@ shader_init(pgShaderObject *self, PyObject *args, PyObject *kwargs)
 {
     PyObject* file;
     SDL_RWops *rw = NULL;
-    int stage, samplers = 0, uniform_buffers = 0, storage_buffers = 0, storage_textures = 0;
+    int stage, samplers = -1, uniform_buffers = -1, storage_buffers = -1, storage_textures = -1;
     char *keywords[] = {"file", "stage", "samplers", "uniform_buffers", "storage_buffers", "storage_textures", NULL};
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oi|iiii", keywords,
                                      &file, &stage, &samplers,
@@ -149,6 +149,22 @@ shader_init(pgShaderObject *self, PyObject *args, PyObject *kwargs)
         free(code);
         RAISERETURN(pgExc_SDLError, "Unrecognized backend shader format!", -1);
 	}
+
+    /* SPIR-V reflection: auto-detect resource counts if not provided */
+    if (samplers == -1 && uniform_buffers == -1 && storage_buffers == -1 && storage_textures == -1) {
+        if (format == SDL_GPU_SHADERFORMAT_SPIRV && shadercross_available) {
+            SDL_ShaderCross_GraphicsShaderMetadata *meta =
+                SDL_ShaderCross_ReflectGraphicsSPIRV(code, code_size, 0);
+            if (meta) {
+                samplers = meta->resource_info.num_samplers;
+                uniform_buffers = meta->resource_info.num_uniform_buffers;
+                storage_buffers = meta->resource_info.num_storage_buffers;
+                storage_textures = meta->resource_info.num_storage_textures;
+                SDL_free(meta);
+            }
+        }
+        if (samplers == -1) { samplers = 0; uniform_buffers = 0; storage_buffers = 0; storage_textures = 0; }
+    }
 	SDL_GPUShaderCreateInfo shaderInfo = {
 		.code = code,
 		.code_size = code_size,
@@ -1140,15 +1156,15 @@ compute_pipeline_init(pgComputePipelineObject *self, PyObject *args, PyObject *k
 {
     PyObject *file;
     SDL_RWops *rw = NULL;
-    int readwrite_storage_textures = 0, readwrite_storage_buffers = 0;
-    int readonly_storage_textures = 0, readonly_storage_buffers = 0;
-    int uniform_buffers = 0, samplers = 0;
-    int threadcount_x, threadcount_y, threadcount_z;
+    int readwrite_storage_textures = -1, readwrite_storage_buffers = -1;
+    int readonly_storage_textures = -1, readonly_storage_buffers = -1;
+    int uniform_buffers = -1, samplers = -1;
+    int threadcount_x = -1, threadcount_y = -1, threadcount_z = -1;
     char *keywords[] = {"file", "threadcount_x", "threadcount_y", "threadcount_z",
                         "readwrite_storage_textures", "readwrite_storage_buffers",
                         "readonly_storage_textures", "readonly_storage_buffers",
                         "uniform_buffers", "samplers", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oiii|iiiiii", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|iiiiiiiii", keywords,
                                      &file, &threadcount_x, &threadcount_y, &threadcount_z,
                                      &readwrite_storage_textures, &readwrite_storage_buffers,
                                      &readonly_storage_textures, &readonly_storage_buffers,
@@ -1183,6 +1199,37 @@ compute_pipeline_init(pgComputePipelineObject *self, PyObject *args, PyObject *k
         free(code);
         RAISERETURN(pgExc_SDLError, "Unrecognized backend shader format!", -1);
     }
+
+    /* SPIR-V reflection: auto-detect threadcounts and resource counts if not provided */
+    if (threadcount_x == -1 && threadcount_y == -1 && threadcount_z == -1) {
+        if (format == SDL_GPU_SHADERFORMAT_SPIRV && shadercross_available) {
+            SDL_ShaderCross_ComputePipelineMetadata *meta =
+                SDL_ShaderCross_ReflectComputeSPIRV(code, code_size, 0);
+            if (meta) {
+                threadcount_x = meta->threadcount_x;
+                threadcount_y = meta->threadcount_y;
+                threadcount_z = meta->threadcount_z;
+                if (samplers == -1) samplers = meta->num_samplers;
+                if (readwrite_storage_textures == -1) readwrite_storage_textures = meta->num_readwrite_storage_textures;
+                if (readwrite_storage_buffers == -1) readwrite_storage_buffers = meta->num_readwrite_storage_buffers;
+                if (readonly_storage_textures == -1) readonly_storage_textures = meta->num_readonly_storage_textures;
+                if (readonly_storage_buffers == -1) readonly_storage_buffers = meta->num_readonly_storage_buffers;
+                if (uniform_buffers == -1) uniform_buffers = meta->num_uniform_buffers;
+                SDL_free(meta);
+            }
+        }
+        if (threadcount_x == -1) {
+            free(code);
+            RAISERETURN(pgExc_SDLError, "threadcount_x/y/z are required (could not auto-detect: non-SPIRV format or SDL_ShaderCross unavailable)", -1);
+        }
+    }
+    /* Default any remaining -1 resource counts to 0 */
+    if (samplers == -1) samplers = 0;
+    if (readwrite_storage_textures == -1) readwrite_storage_textures = 0;
+    if (readwrite_storage_buffers == -1) readwrite_storage_buffers = 0;
+    if (readonly_storage_textures == -1) readonly_storage_textures = 0;
+    if (readonly_storage_buffers == -1) readonly_storage_buffers = 0;
+    if (uniform_buffers == -1) uniform_buffers = 0;
     SDL_GPUComputePipelineCreateInfo info = {
         .code = code,
         .code_size = code_size,

@@ -25,7 +25,7 @@ def quit() -> None: ...
 
 
 class Shader:
-    def __init__(self, file: FileLike, stage: int, samplers: int = 0, uniform_buffers: int = 0, storage_buffers: int = 0, storage_textures: int = 0): ...
+    def __init__(self, file: FileLike, stage: int, samplers: int = -1, uniform_buffers: int = -1, storage_buffers: int = -1, storage_textures: int = -1): ...
 
 
 class RenderPass:
@@ -75,7 +75,7 @@ class Sampler:
 
 
 class ComputePipeline:
-    def __init__(self, file: FileLike, threadcount_x: int, threadcount_y: int, threadcount_z: int, readwrite_storage_textures: int = 0, readwrite_storage_buffers: int = 0, readonly_storage_textures: int = 0, readonly_storage_buffers: int = 0, uniform_buffers: int = 0, samplers: int = 0): ...
+    def __init__(self, file: FileLike, threadcount_x: int = -1, threadcount_y: int = -1, threadcount_z: int = -1, readwrite_storage_textures: int = -1, readwrite_storage_buffers: int = -1, readonly_storage_textures: int = -1, readonly_storage_buffers: int = -1, uniform_buffers: int = -1, samplers: int = -1): ...
 
 
 class ComputePass:
