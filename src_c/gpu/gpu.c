@@ -12,6 +12,8 @@ static int active_compute_passes = 0;
 
 static int swapchain_acquired = 0;
 
+static int shadercross_available = 0;
+
 /* Types */
 static PyTypeObject pgShader_Type;
 
@@ -1857,11 +1859,7 @@ init(PyObject *self, PyObject *args, PyObject *kwargs)
     if (device == NULL) {
         return RAISE(pgExc_SDLError, SDL_GetError());
     }
-    if (!SDL_ShaderCross_Init()) {
-        SDL_DestroyGPUDevice(device);
-        device = NULL;
-        return RAISE(pgExc_SDLError, "Failed to initialize SDL_ShaderCross");
-    }
+    shadercross_available = SDL_ShaderCross_Init() ? 1 : 0;
     Py_RETURN_NONE;
 }
 
@@ -2180,6 +2178,10 @@ compile_shader(PyObject *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    if (!shadercross_available) {
+        return RAISE(pgExc_SDLError, "SDL_ShaderCross is not available");
+    }
+
     /* Read HLSL source file */
     FILE *f = fopen(source_file, "rb");
     if (!f) {
@@ -2199,6 +2201,8 @@ compile_shader(PyObject *self, PyObject *args, PyObject *kwargs)
         sc_stage = SDL_SHADERCROSS_SHADERSTAGE_VERTEX;
     } else if (stage == SDL_GPU_SHADERSTAGE_FRAGMENT) {
         sc_stage = SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT;
+    } else if (stage == SDL_SHADERCROSS_SHADERSTAGE_COMPUTE) {
+        sc_stage = SDL_SHADERCROSS_SHADERSTAGE_COMPUTE;
     } else {
         free(source);
         return RAISE(pgExc_SDLError, "Invalid shader stage");
@@ -2237,7 +2241,10 @@ static PyObject *
 quit(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     if (device != NULL) {
-        SDL_ShaderCross_Quit();
+        if (shadercross_available) {
+            SDL_ShaderCross_Quit();
+            shadercross_available = 0;
+        }
         SDL_DestroyGPUDevice(device);
         device = NULL;
     }
