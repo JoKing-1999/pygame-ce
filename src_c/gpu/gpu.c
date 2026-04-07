@@ -645,7 +645,7 @@ buffer_get_element_size(SDL_GPUBufferUsageFlags usage, BufferType buffer_type) {
             case POSITION_TEXTURE_VERTEX:
                 return sizeof(float) * 5;
             default:
-                return 0;
+                return (buffer_type == -1) ? 1 : 0;
         }
     }
     if (usage & SDL_GPU_BUFFERUSAGE_INDEX) {
@@ -809,7 +809,7 @@ buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
                 transfer_buffer = buffer_upload_position_texture_vertex(self, data, size);
                 break;
             default:
-                transfer_buffer = buffer_upload_position_color_vertex(self, data, size);
+                transfer_buffer = buffer_upload_indirect(self, data, size);
         }
     }
     else if (self->usage & SDL_GPU_BUFFERUSAGE_INDEX) {
