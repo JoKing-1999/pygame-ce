@@ -935,8 +935,14 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
     if (pgSurface_Check(data)) {
         surf = pgSurface_AsSurface((pgSurfaceObject *)data);
         SURF_INIT_CHECK(surf)
+        Uint32 texel_size = SDL_GPUTextureFormatTexelBlockSize(
+            self->texture_info.format);
+        if (PG_SURF_BytesPerPixel(surf) != (int)texel_size) {
+            return RAISE(PyExc_ValueError,
+                "Surface bytes-per-pixel does not match texture format");
+        }
         src_pixels = (Uint8 *)surf->pixels;
-        size = self->width * self->height * 4;
+        size = self->width * self->height * texel_size;
     } else if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) == 0) {
         src_pixels = (Uint8 *)view.buf;
         size = (Uint32)view.len;
