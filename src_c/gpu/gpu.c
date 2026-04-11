@@ -921,10 +921,17 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
 {
     PyObject *data;
     Uint32 layer = 0;
-    char *keywords[] = {"data", "layer", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|I", keywords, &data, &layer)) {
+    Uint32 mip_level = 0;
+    char *keywords[] = {"data", "layer", "mip_level", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|II", keywords, &data, &layer, &mip_level)) {
         return NULL;
     }
+
+    /* Compute dimensions for this mip level */
+    Uint32 mip_w = self->width >> mip_level;
+    Uint32 mip_h = self->height >> mip_level;
+    if (mip_w < 1) mip_w = 1;
+    if (mip_h < 1) mip_h = 1;
 
     Uint8 *src_pixels;
     Uint32 size;
@@ -942,7 +949,7 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
                 "Surface bytes-per-pixel does not match texture format");
         }
         src_pixels = (Uint8 *)surf->pixels;
-        size = self->width * self->height * texel_size;
+        size = mip_w * mip_h * texel_size;
     } else if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) == 0) {
         src_pixels = (Uint8 *)view.buf;
         size = (Uint32)view.len;
@@ -978,9 +985,10 @@ texture_upload(pgGPUTextureObject *self, PyObject *args, PyObject *kwargs)
         },
         &(SDL_GPUTextureRegion) {
             .texture = self->texture,
+            .mip_level = mip_level,
             .layer = layer,
-            .w = self->width,
-            .h = self->height,
+            .w = mip_w,
+            .h = mip_h,
             .d = 1
         },
         false
@@ -1123,9 +1131,12 @@ sampler_init(pgSamplerObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUSamplerMipmapMode mipmap_mode;
     SDL_GPUSamplerAddressMode address_mode;
     float anisotropy = 0;
-    char *keywords[] = {"filter", "mipmap_mode", "address_mode", "anisotropy", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iii|f", keywords,
-                                     &filter, &mipmap_mode, &address_mode, &anisotropy)) {
+    float min_lod = 0.0f, max_lod = 0.0f, mip_lod_bias = 0.0f;
+    char *keywords[] = {"filter", "mipmap_mode", "address_mode", "anisotropy",
+                        "min_lod", "max_lod", "mip_lod_bias", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iii|ffff", keywords,
+                                     &filter, &mipmap_mode, &address_mode, &anisotropy,
+                                     &min_lod, &max_lod, &mip_lod_bias)) {
         return -1;
     }
 
@@ -1135,6 +1146,9 @@ sampler_init(pgSamplerObject *self, PyObject *args, PyObject *kwargs)
     self->sampler_info.address_mode_u = address_mode;
     self->sampler_info.address_mode_v = address_mode;
     self->sampler_info.address_mode_w = address_mode;
+    self->sampler_info.min_lod = min_lod;
+    self->sampler_info.max_lod = max_lod;
+    self->sampler_info.mip_lod_bias = mip_lod_bias;
     if (anisotropy) {
         self->sampler_info.enable_anisotropy = true;
         self->sampler_info.max_anisotropy = anisotropy;
