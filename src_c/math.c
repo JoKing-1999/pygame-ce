@@ -59,9 +59,9 @@
 #endif /* M_PI_2 */
 
 #define VECTOR_EPSILON (1e-6)
-#define VECTOR_MAX_SIZE (3)
-#define STRING_BUF_SIZE_REPR (110)
-#define STRING_BUF_SIZE_STR (103)
+#define VECTOR_MAX_SIZE (4)
+#define STRING_BUF_SIZE_REPR (144)
+#define STRING_BUF_SIZE_STR (137)
 #define SWIZZLE_ERR_NO_ERR 0
 #define SWIZZLE_ERR_DOUBLE_IDX 1
 #define SWIZZLE_ERR_EXTRACTION_ERR 2
@@ -85,12 +85,15 @@
 
 static PyTypeObject pgVector2_Type;
 static PyTypeObject pgVector3_Type;
+static PyTypeObject pgVector4_Type;
 static PyTypeObject pgVectorElementwiseProxy_Type;
 static PyTypeObject pgVectorIter_Type;
 
 #define pgVector2_Check(x) (PyType_IsSubtype(Py_TYPE(x), &pgVector2_Type))
 #define pgVector3_Check(x) (PyType_IsSubtype(Py_TYPE(x), &pgVector3_Type))
-#define pgVector_Check(x) (pgVector2_Check(x) || pgVector3_Check(x))
+#define pgVector4_Check(x) (PyType_IsSubtype(Py_TYPE(x), &pgVector4_Type))
+#define pgVector_Check(x) \
+    (pgVector2_Check(x) || pgVector3_Check(x) || pgVector4_Check(x))
 #define vector_elementwiseproxy_Check(x) \
     (Py_TYPE(x) == &pgVectorElementwiseProxy_Type)
 #define _vector_subtype_new(x) \
@@ -207,6 +210,10 @@ vector_sety(pgVector *self, PyObject *value, void *closure);
 static int
 vector_setz(pgVector *self, PyObject *value, void *closure);
 static PyObject *
+vector_getw(pgVector *self, void *closure);
+static int
+vector_setw(pgVector *self, PyObject *value, void *closure);
+static PyObject *
 vector_get_angle(pgVector *self, void *closure);
 static PyObject *
 vector_get_angle_rad(pgVector *self, void *closure);
@@ -309,6 +316,13 @@ static int
 _vector3_rotate_helper(double *dst_coords, const double *src_coords,
                        const double *axis_coords, double angle,
                        double epsilon);
+
+/* vector4 specific functions */
+static PyObject *
+vector4_new(PyTypeObject *type, PyObject *args, PyObject *kwds);
+static int
+vector4_init(pgVector *self, PyObject *args, PyObject *kwds);
+
 static PyObject *
 vector3_rotate(pgVector *self, PyObject *args);
 static PyObject *
@@ -451,6 +465,11 @@ pgVectorCompatible_Check(PyObject *obj, Py_ssize_t dim)
                 return 1;
             }
             break;
+        case 4:
+            if (pgVector4_Check(obj)) {
+                return 1;
+            }
+            break;
         default:
             PyErr_SetString(
                 PyExc_SystemError,
@@ -494,6 +513,12 @@ pg_VectorCoordsFromObj(PyObject *obj, Py_ssize_t dim, double *const coords)
         case 3:
             if (pgVector3_Check(obj)) {
                 memcpy(coords, ((pgVector *)obj)->coords, 3 * sizeof(double));
+                return 1;
+            }
+            break;
+        case 4:
+            if (pgVector4_Check(obj)) {
+                memcpy(coords, ((pgVector *)obj)->coords, 4 * sizeof(double));
                 return 1;
             }
             break;
@@ -644,6 +669,8 @@ pgVector_NEW(Py_ssize_t dim)
             return vector2_new(&pgVector2_Type, NULL, NULL);
         case 3:
             return vector3_new(&pgVector3_Type, NULL, NULL);
+        case 4:
+            return vector4_new(&pgVector4_Type, NULL, NULL);
         default:
             return RAISE(PyExc_SystemError,
                          "Wrong internal call to pgVector_NEW.\n");
@@ -1361,6 +1388,18 @@ vector_setz(pgVector *self, PyObject *value, void *closure)
 }
 
 static PyObject *
+vector_getw(pgVector *self, void *closure)
+{
+    return PyFloat_FromDouble(self->coords[3]);
+}
+
+static int
+vector_setw(pgVector *self, PyObject *value, void *closure)
+{
+    return vector_set_component(self, value, 3);
+}
+
+static PyObject *
 vector_get_angle_rad(pgVector *self, void *closure)
 {
     double angle_rad = _pg_atan2(self->coords[1], self->coords[0]);
@@ -1861,6 +1900,12 @@ _vector_distance_helper(pgVector *self, PyObject *other)
             dz = otherv->coords[2] - self->coords[2];
             distance_squared += dz * dz;
         }
+        else if (dim == 4) {
+            double dz, dw;
+            dz = otherv->coords[2] - self->coords[2];
+            dw = otherv->coords[3] - self->coords[3];
+            distance_squared += dz * dz + dw * dw;
+        }
     }
     /* Vector-Sequence distance calculation*/
     else {
@@ -1951,6 +1996,12 @@ vector_repr(pgVector *self)
             PyOS_snprintf(buffer, STRING_BUF_SIZE_REPR, "Vector3(%g, %g, %g)",
                           self->coords[0], self->coords[1], self->coords[2]);
     }
+    else if (self->dim == 4) {
+        tmp = PyOS_snprintf(buffer, STRING_BUF_SIZE_REPR,
+                            "Vector4(%g, %g, %g, %g)", self->coords[0],
+                            self->coords[1], self->coords[2],
+                            self->coords[3]);
+    }
     else {
         return RAISE(
             PyExc_NotImplementedError,
@@ -1981,6 +2032,11 @@ vector_str(pgVector *self)
     else if (self->dim == 3) {
         tmp = PyOS_snprintf(buffer, STRING_BUF_SIZE_STR, "[%g, %g, %g]",
                             self->coords[0], self->coords[1], self->coords[2]);
+    }
+    else if (self->dim == 4) {
+        tmp = PyOS_snprintf(buffer, STRING_BUF_SIZE_STR, "[%g, %g, %g, %g]",
+                            self->coords[0], self->coords[1],
+                            self->coords[2], self->coords[3]);
     }
     else {
         return RAISE(
@@ -3550,6 +3606,132 @@ vector3_reduce(PyObject *oself, PyObject *_null)
                          self->coords[1], self->coords[2]);
 }
 
+/********************************************
+ * Vector4 constructor / init / update / reduce
+ ********************************************/
+
+static PyObject *
+vector4_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    pgVector *vec = (pgVector *)type->tp_alloc(type, 0);
+    if (vec != NULL) {
+        vec->dim = 4;
+        vec->epsilon = VECTOR_EPSILON;
+    }
+    return (PyObject *)vec;
+}
+
+static int
+_vector4_set(pgVector *self, PyObject *xOrSequence, PyObject *y, PyObject *z,
+             PyObject *w)
+{
+    if (xOrSequence) {
+        if (pg_VectorCoordsFromObj(xOrSequence, 4, self->coords)) {
+            return 0;
+        }
+        else if (RealNumber_Check(xOrSequence)) {
+            self->coords[0] = PyFloat_AsDouble(xOrSequence);
+            if (self->coords[0] == -1.0 && PyErr_Occurred()) {
+                return -1;
+            }
+            /* scalar constructor */
+            if (y == NULL && z == NULL && w == NULL) {
+                self->coords[1] = self->coords[0];
+                self->coords[2] = self->coords[0];
+                self->coords[3] = self->coords[0];
+                return 0;
+            }
+        }
+        else if (PyUnicode_Check(xOrSequence)) {
+            char *delimiter[5] = {"Vector4(", ", ", ", ", ", ", ")"};
+            Py_ssize_t error_code;
+            error_code = _vector_coords_from_string(xOrSequence, delimiter,
+                                                    self->coords, self->dim);
+            if (error_code == -2) {
+                return -1;
+            }
+            else if (error_code == -1) {
+                goto error;
+            }
+            return 0;
+        }
+        else {
+            goto error;
+        }
+    }
+    else {
+        self->coords[0] = 0.;
+        self->coords[1] = 0.;
+        self->coords[2] = 0.;
+        self->coords[3] = 0.;
+        return 0;
+    }
+    if (y && z && w) {
+        if (RealNumber_Check(y) && RealNumber_Check(z) &&
+            RealNumber_Check(w)) {
+            self->coords[1] = PyFloat_AsDouble(y);
+            if (self->coords[1] == -1.0 && PyErr_Occurred())
+                return -1;
+            self->coords[2] = PyFloat_AsDouble(z);
+            if (self->coords[2] == -1.0 && PyErr_Occurred())
+                return -1;
+            self->coords[3] = PyFloat_AsDouble(w);
+            if (self->coords[3] == -1.0 && PyErr_Occurred())
+                return -1;
+        }
+        else {
+            goto error;
+        }
+    }
+    else {
+        goto error;
+    }
+    return 0;
+error:
+    PyErr_SetString(PyExc_ValueError,
+                    "Vector4 must be set with 4 real numbers, a "
+                    "sequence of 4 real numbers, or "
+                    "another Vector4 instance");
+    return -1;
+}
+
+static int
+vector4_init(pgVector *self, PyObject *args, PyObject *kwds)
+{
+    PyObject *xOrSequence = NULL, *y = NULL, *z = NULL, *w = NULL;
+    static char *kwlist[] = {"x", "y", "z", "w", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOO:Vector4", kwlist,
+                                     &xOrSequence, &y, &z, &w)) {
+        return -1;
+    }
+    return _vector4_set(self, xOrSequence, y, z, w);
+}
+
+static PyObject *
+vector4_update(pgVector *self, PyObject *args, PyObject *kwds)
+{
+    PyObject *xOrSequence = NULL, *y = NULL, *z = NULL, *w = NULL;
+    static char *kwlist[] = {"x", "y", "z", "w", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOO:Vector4", kwlist,
+                                     &xOrSequence, &y, &z, &w)) {
+        return NULL;
+    }
+    if (_vector4_set(self, xOrSequence, y, z, w) == 0) {
+        Py_RETURN_NONE;
+    }
+    return NULL;
+}
+
+static PyObject *
+vector4_reduce(PyObject *oself, PyObject *_null)
+{
+    pgVector *self = (pgVector *)oself;
+    return Py_BuildValue("(O(dddd))", Py_TYPE(oself), self->coords[0],
+                         self->coords[1], self->coords[2], self->coords[3]);
+}
+
 static PyMethodDef vector3_methods[] = {
     {"length", (PyCFunction)vector_length, METH_NOARGS,
      DOC_MATH_VECTOR3_LENGTH},
@@ -3681,6 +3863,90 @@ static PyTypeObject pgVector3_Type = {
     .tp_getset = vector3_getsets,
     .tp_init = (initproc)vector3_init,
     .tp_new = (newfunc)vector3_new,
+};
+
+/********************************************
+ * Vector4 methods, getsets, type definition
+ ********************************************/
+
+static PyMethodDef vector4_methods[] = {
+    {"length", (PyCFunction)vector_length, METH_NOARGS,
+     DOC_MATH_VECTOR4_LENGTH},
+    {"length_squared", (PyCFunction)vector_length_squared, METH_NOARGS,
+     DOC_MATH_VECTOR4_LENGTHSQUARED},
+    {"magnitude", (PyCFunction)vector_length, METH_NOARGS,
+     DOC_MATH_VECTOR4_MAGNITUDE},
+    {"magnitude_squared", (PyCFunction)vector_length_squared, METH_NOARGS,
+     DOC_MATH_VECTOR4_MAGNITUDESQUARED},
+    {"normalize", (PyCFunction)vector_normalize, METH_NOARGS,
+     DOC_MATH_VECTOR4_NORMALIZE},
+    {"normalize_ip", (PyCFunction)vector_normalize_ip, METH_NOARGS,
+     DOC_MATH_VECTOR4_NORMALIZEIP},
+    {"is_normalized", (PyCFunction)vector_is_normalized, METH_NOARGS,
+     DOC_MATH_VECTOR4_ISNORMALIZED},
+    {"dot", (PyCFunction)vector_dot, METH_O, DOC_MATH_VECTOR4_DOT},
+    {"scale_to_length", (PyCFunction)vector_scale_to_length, METH_O,
+     DOC_MATH_VECTOR4_SCALETOLENGTH},
+    {"move_towards", (PyCFunction)vector_move_towards, METH_VARARGS,
+     DOC_MATH_VECTOR4_MOVETOWARDS},
+    {"move_towards_ip", (PyCFunction)vector_move_towards_ip, METH_VARARGS,
+     DOC_MATH_VECTOR4_MOVETOWARDSIP},
+    {"slerp", (PyCFunction)vector_slerp, METH_VARARGS, DOC_MATH_VECTOR4_SLERP},
+    {"lerp", (PyCFunction)vector_lerp, METH_VARARGS, DOC_MATH_VECTOR4_LERP},
+    {"smoothstep", (PyCFunction)vector_smoothstep, METH_VARARGS,
+     DOC_MATH_VECTOR4_SMOOTHSTEP},
+    {"reflect", (PyCFunction)vector_reflect, METH_O, DOC_MATH_VECTOR4_REFLECT},
+    {"reflect_ip", (PyCFunction)vector_reflect_ip, METH_O,
+     DOC_MATH_VECTOR4_REFLECTIP},
+    {"distance_to", (PyCFunction)vector_distance_to, METH_O,
+     DOC_MATH_VECTOR4_DISTANCETO},
+    {"distance_squared_to", (PyCFunction)vector_distance_squared_to, METH_O,
+     DOC_MATH_VECTOR4_DISTANCESQUAREDTO},
+    {"elementwise", (PyCFunction)vector_elementwise, METH_NOARGS,
+     DOC_MATH_VECTOR4_ELEMENTWISE},
+    {"copy", (PyCFunction)vector_copy, METH_NOARGS, DOC_MATH_VECTOR4_COPY},
+    {"__copy__", (PyCFunction)vector_copy, METH_NOARGS, NULL},
+    {"clamp_magnitude", (PyCFunction)vector_clamp_magnitude, METH_FASTCALL,
+     DOC_MATH_VECTOR4_CLAMPMAGNITUDE},
+    {"clamp_magnitude_ip", (PyCFunction)vector_clamp_magnitude_ip,
+     METH_FASTCALL, DOC_MATH_VECTOR4_CLAMPMAGNITUDEIP},
+    {"update", (PyCFunction)vector4_update, METH_VARARGS | METH_KEYWORDS,
+     DOC_MATH_VECTOR4_UPDATE},
+    {"__safe_for_unpickling__", (PyCFunction)vector_getsafepickle, METH_NOARGS,
+     NULL},
+    {"__reduce__", (PyCFunction)vector4_reduce, METH_NOARGS, NULL},
+    {"__round__", (PyCFunction)vector___round__, METH_VARARGS, NULL},
+    {NULL} /* Sentinel */
+};
+
+static PyGetSetDef vector4_getsets[] = {
+    {"x", (getter)vector_getx, (setter)vector_setx, NULL, NULL},
+    {"y", (getter)vector_gety, (setter)vector_sety, NULL, NULL},
+    {"z", (getter)vector_getz, (setter)vector_setz, NULL, NULL},
+    {"w", (getter)vector_getw, (setter)vector_setw, NULL, NULL},
+    {NULL, 0, NULL, NULL, NULL} /* Sentinel */
+};
+
+static PyTypeObject pgVector4_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.math.Vector4",
+    .tp_basicsize = sizeof(pgVector),
+    .tp_dealloc = (destructor)vector_dealloc,
+    .tp_repr = (reprfunc)vector_repr,
+    .tp_as_number = &vector_as_number,
+    .tp_as_sequence = &vector_as_sequence,
+    .tp_as_mapping = &vector_as_mapping,
+    .tp_str = (reprfunc)vector_str,
+    .tp_getattro = (getattrofunc)vector_getAttr_swizzle,
+    .tp_setattro = (setattrofunc)vector_setAttr_swizzle,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_doc = DOC_MATH_VECTOR4,
+    .tp_richcompare = (richcmpfunc)vector_richcompare,
+    .tp_iter = vector_iter,
+    .tp_methods = vector4_methods,
+    .tp_members = vector_members,
+    .tp_getset = vector4_getsets,
+    .tp_init = (initproc)vector4_init,
+    .tp_new = (newfunc)vector4_new,
 };
 
 /********************************************
@@ -4637,6 +4903,7 @@ MODINIT_DEFINE(math)
     /* add extension types to module */
     if ((PyModule_AddType(module, &pgVector2_Type) < 0) ||
         (PyModule_AddType(module, &pgVector3_Type) < 0) ||
+        (PyModule_AddType(module, &pgVector4_Type) < 0) ||
         (PyModule_AddType(module, &pgVectorElementwiseProxy_Type) < 0) ||
         (PyModule_AddType(module, &pgVectorIter_Type) < 0)) {
         Py_DECREF(module);

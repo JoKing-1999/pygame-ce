@@ -323,6 +323,27 @@ class Vector3(_GenericVector):
     @overload
     def update(self, x: int, y: int, z: int) -> None: ...
 
+class Vector4(_GenericVector):
+    x: float
+    y: float
+    z: float
+    w: float
+    @overload
+    def __init__(
+        self: _TVec,
+        x: str | float | SequenceLike[float] | _TVec = 0,
+    ) -> None: ...
+    @overload
+    def __init__(self, x: float, y: float, z: float, w: float) -> None: ...
+    def __reduce__(self: _TVec) -> tuple[type[_TVec], tuple[float, float, float, float]]: ...
+    @overload
+    def update(
+        self: _TVec,
+        x: str | float | SequenceLike[float] | _TVec = 0,
+    ) -> None: ...
+    @overload
+    def update(self, x: float, y: float, z: float, w: float) -> None: ...
+
 def lerp(a: float, b: float, value: float, do_clamp: bool = True, /) -> float: ...
 def invlerp(a: float, b: float, value: float, /) -> float: ...
 def remap(
