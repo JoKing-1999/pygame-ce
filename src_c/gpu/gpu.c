@@ -208,10 +208,12 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     float depth_clear = 0;
     SDL_GPUStoreOp depth_store_op = SDL_GPU_STOREOP_DONT_CARE;
     SDL_GPUStoreOp stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    Uint8 clear_stencil = 0;
+    int depth_cycle = 1;
     SDL_GPUTexture* swapchainTexture;
-    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", "depth_stencil_texture", "depth_clear", "depth_store_op", "stencil_store_op", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!O!fii", keywords,
-                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture, &pgGPUTexture_Type, &depth_stencil_texture, &depth_clear, &depth_store_op, &stencil_store_op)) {
+    char *keywords[] = {"window", "texture", "layer", "cycle", "resolve_texture", "depth_stencil_texture", "depth_clear", "depth_store_op", "stencil_store_op", "clear_stencil", "depth_cycle", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O!ipO!O!fiiBp", keywords,
+                                     &pgWindow_Type, &window, &pgGPUTexture_Type, &texture, &layer, &cycle, &pgGPUTexture_Type, &resolve_texture, &pgGPUTexture_Type, &depth_stencil_texture, &depth_clear, &depth_store_op, &stencil_store_op, &clear_stencil, &depth_cycle)) {
         return NULL;
     }
     if (window == NULL && texture == NULL) {
@@ -227,13 +229,13 @@ render_pass_begin(pgRenderPassObject *self, PyObject *args, PyObject *kwargs)
     SDL_GPUDepthStencilTargetInfo ds_info = { 0 };
     if (depth_stencil_texture != NULL) {
         ds_info.texture = depth_stencil_texture->texture;
-        ds_info.cycle = true;
+        ds_info.cycle = depth_cycle;
         ds_info.load_op = SDL_GPU_LOADOP_CLEAR;
         ds_info.store_op = depth_store_op;
         ds_info.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
         ds_info.stencil_store_op = stencil_store_op;
         ds_info.clear_depth = depth_clear;
-        ds_info.clear_stencil = 0;
+        ds_info.clear_stencil = clear_stencil;
         ds_info_ptr = &ds_info;
     }
     if (texture != NULL) {
