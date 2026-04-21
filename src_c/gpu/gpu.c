@@ -742,6 +742,29 @@ buffer_upload_position_texture_vertex(pgBufferObject *self, PyObject* data, int 
 static inline SDL_GPUTransferBuffer*
 buffer_upload_index(pgBufferObject *self, PyObject* data, int size)
 {
+    /* Fast path: buffer protocol (numpy arrays, bytes, bytearray).
+     * Caller must match dtype to index_element_size (uint16 or uint32). */
+    Py_buffer view;
+    if (PyObject_GetBuffer(data, &view, PyBUF_SIMPLE) >= 0) {
+        if (view.len == size) {
+            SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(device,
+                &(SDL_GPUTransferBufferCreateInfo) {
+                    .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                    .size = size
+                });
+            void* td = SDL_MapGPUTransferBuffer(device, tb, false);
+            memcpy(td, view.buf, size);
+            SDL_UnmapGPUTransferBuffer(device, tb);
+            PyBuffer_Release(&view);
+            return tb;
+        }
+        PyBuffer_Release(&view);
+    }
+    else {
+        PyErr_Clear();
+    }
+
+    /* Slow path: Python sequence (list of ints) */
     SDL_GPUTransferBuffer* transfer_buffer = SDL_CreateGPUTransferBuffer(device, &(SDL_GPUTransferBufferCreateInfo) {
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
         .size = size
@@ -787,7 +810,12 @@ static PyObject *
 buffer_upload(pgBufferObject *self, PyObject *args, PyObject *kwargs)
 {
     PyObject* data;
-    int size = buffer_get_element_size(self->usage, self->buffer_type) * self->no_of_elements;
+    int element_size = buffer_get_element_size(self->usage, self->buffer_type);
+    if ((self->usage & SDL_GPU_BUFFERUSAGE_INDEX) &&
+        self->index_element_size == SDL_GPU_INDEXELEMENTSIZE_32BIT) {
+        element_size = sizeof(Uint32);
+    }
+    int size = element_size * self->no_of_elements;
     char *keywords[] = {"data", NULL};
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", keywords, &data)) {
         return NULL;
