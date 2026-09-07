@@ -46,7 +46,13 @@ from .rect import Rect as Rect, FRect as FRect
 from .surface import Surface as Surface, SurfaceType as SurfaceType
 from .color import Color as Color
 from .pixelarray import PixelArray as PixelArray
-from .math import Vector2 as Vector2, Vector3 as Vector3, Vector4 as Vector4
+from .math import (
+    Vector2 as Vector2,
+    Vector3 as Vector3,
+    Vector4 as Vector4,
+    Matrix4x4 as Matrix4x4,
+)
+
 from .cursors import Cursor as Cursor
 from .bufferproxy import BufferProxy as BufferProxy
 from .mask import Mask as Mask

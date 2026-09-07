@@ -85,6 +85,8 @@ static PyTypeObject pgVector3_Type;
 static PyTypeObject pgVector4_Type;
 static PyTypeObject pgVectorElementwiseProxy_Type;
 static PyTypeObject pgVectorIter_Type;
+static PyTypeObject pgMatrix4x4_Type;
+static PyTypeObject pgMatrix4x4Iter_Type;
 
 #define pgVector2_Check(x) (PyType_IsSubtype(Py_TYPE(x), &pgVector2_Type))
 #define pgVector3_Check(x) (PyType_IsSubtype(Py_TYPE(x), &pgVector3_Type))
@@ -93,6 +95,7 @@ static PyTypeObject pgVectorIter_Type;
     (pgVector2_Check(x) || pgVector3_Check(x) || pgVector4_Check(x))
 #define vector_elementwiseproxy_Check(x) \
     (Py_TYPE(x) == &pgVectorElementwiseProxy_Type)
+#define pgMatrix4x4_Check(x) (PyType_IsSubtype(Py_TYPE(x), &pgMatrix4x4_Type))
 #define _vector_subtype_new(x) \
     ((pgVector *)(Py_TYPE(x)->tp_new(Py_TYPE(x), NULL, NULL)))
 
@@ -113,6 +116,16 @@ typedef struct {
 typedef struct {
     PyObject_HEAD pgVector *vec;
 } vector_elementwiseproxy;
+
+typedef struct {
+    PyObject_HEAD double values[16];
+    double epsilon; /* Small value for comparisons */
+} pgMatrix4x4;
+
+typedef struct {
+    PyObject_HEAD Py_ssize_t it_index;
+    pgMatrix4x4 *mat;
+} matrix4x4iter;
 
 /* further forward declarations */
 /* math functions */
@@ -4618,6 +4631,1496 @@ vector_elementwise(pgVector *vec, PyObject *_null)
     return (PyObject *)proxy;
 }
 
+/********************************
+ * pgMatrix4x4 type definition
+ ********************************/
+
+static void
+_pg_matrix4x4_set_identity(double *v)
+{
+    memset(v, 0, 16 * sizeof(double));
+    v[0] = v[5] = v[10] = v[15] = 1.0;
+}
+
+static pgMatrix4x4 *
+_pg_matrix4x4_alloc(void)
+{
+    return (pgMatrix4x4 *)pgMatrix4x4_Type.tp_alloc(&pgMatrix4x4_Type, 0);
+}
+
+static PyObject *
+_pg_matrix4x4_from_values(const double *values)
+{
+    pgMatrix4x4 *mat = _pg_matrix4x4_alloc();
+    if (mat != NULL) {
+        memcpy(mat->values, values, 16 * sizeof(double));
+        mat->epsilon = VECTOR_EPSILON;
+    }
+    return (PyObject *)mat;
+}
+
+static PyObject *
+_pg_matrix4x4_from_values_epsilon(const double *values, const pgMatrix4x4 *src)
+{
+    PyObject *m = _pg_matrix4x4_from_values(values);
+    if (m != NULL) {
+        ((pgMatrix4x4 *)m)->epsilon = src->epsilon;
+    }
+    return m;
+}
+
+static void
+_pg_mat4_mul(const double *__restrict a, const double *__restrict b,
+             double *__restrict out)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        double a0 = a[i * 4 + 0];
+        double a1 = a[i * 4 + 1];
+        double a2 = a[i * 4 + 2];
+        double a3 = a[i * 4 + 3];
+        out[i * 4 + 0] = a0 * b[0] + a1 * b[4] + a2 * b[8] + a3 * b[12];
+        out[i * 4 + 1] = a0 * b[1] + a1 * b[5] + a2 * b[9] + a3 * b[13];
+        out[i * 4 + 2] = a0 * b[2] + a1 * b[6] + a2 * b[10] + a3 * b[14];
+        out[i * 4 + 3] = a0 * b[3] + a1 * b[7] + a2 * b[11] + a3 * b[15];
+    }
+}
+
+static void
+_pg_fill_translation(double *v, const double *c)
+{
+    _pg_matrix4x4_set_identity(v);
+    v[3] = c[0];
+    v[7] = c[1];
+    v[11] = c[2];
+}
+
+static void
+_pg_fill_scale(double *v, double sx, double sy, double sz)
+{
+    memset(v, 0, 16 * sizeof(double));
+    v[0] = sx;
+    v[5] = sy;
+    v[10] = sz;
+    v[15] = 1.0;
+}
+
+static int
+_pg_fill_rotation_axis_angle(double *v, const double *ax, double angle_deg)
+{
+    double len = sqrt(ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]);
+    double x, y, z, a, c, s, t;
+    if (len < 1e-12) {
+        return 0;
+    }
+    x = ax[0] / len;
+    y = ax[1] / len;
+    z = ax[2] / len;
+    a = DEG2RAD(angle_deg);
+    c = cos(a);
+    s = sin(a);
+    t = 1.0 - c;
+    v[0] = c + x * x * t;
+    v[1] = x * y * t + z * s;
+    v[2] = x * z * t - y * s;
+    v[3] = 0.0;
+    v[4] = y * x * t - z * s;
+    v[5] = c + y * y * t;
+    v[6] = y * z * t + x * s;
+    v[7] = 0.0;
+    v[8] = z * x * t + y * s;
+    v[9] = z * y * t - x * s;
+    v[10] = c + z * z * t;
+    v[11] = 0.0;
+    v[12] = 0.0;
+    v[13] = 0.0;
+    v[14] = 0.0;
+    v[15] = 1.0;
+    return 1;
+}
+
+static int
+_pg_parse_scale_arg(PyObject *arg, double *s, const char *name)
+{
+    if (RealNumber_Check(arg)) {
+        double f = PyFloat_AsDouble(arg);
+        if (f == -1.0 && PyErr_Occurred()) {
+            return -1;
+        }
+        s[0] = s[1] = s[2] = f;
+        return 0;
+    }
+    if (!pg_VectorCoordsFromObj(arg, 3, s)) {
+        PyErr_Format(PyExc_TypeError,
+                     "%s requires a number, a Vector3, or a sequence of 3 "
+                     "numbers",
+                     name);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+_pg_parse_vec3_arg(PyObject *arg, double *out, const char *name)
+{
+    if (!pg_VectorCoordsFromObj(arg, 3, out)) {
+        PyErr_Format(PyExc_TypeError,
+                     "%s requires a Vector3 or a sequence of 3 numbers", name);
+        return -1;
+    }
+    return 0;
+}
+
+static void
+_pg_apply_translation(double *v, const double *c)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        v[i * 4 + 3] = v[i * 4 + 0] * c[0] + v[i * 4 + 1] * c[1] +
+                       v[i * 4 + 2] * c[2] + v[i * 4 + 3];
+    }
+}
+
+static void
+_pg_apply_scale(double *v, const double *s)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        v[i * 4 + 0] *= s[0];
+        v[i * 4 + 1] *= s[1];
+        v[i * 4 + 2] *= s[2];
+    }
+}
+
+static void
+_pg_apply_rotation(double *v, const double *r)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        double m0 = v[i * 4 + 0], m1 = v[i * 4 + 1], m2 = v[i * 4 + 2];
+        v[i * 4 + 0] = m0 * r[0] + m1 * r[4] + m2 * r[8];
+        v[i * 4 + 1] = m0 * r[1] + m1 * r[5] + m2 * r[9];
+        v[i * 4 + 2] = m0 * r[2] + m1 * r[6] + m2 * r[10];
+    }
+}
+
+static PyObject *
+_pg_vector3_from_doubles(double x, double y, double z)
+{
+    pgVector *v = (pgVector *)pgVector_NEW(3);
+    if (v != NULL) {
+        v->coords[0] = x;
+        v->coords[1] = y;
+        v->coords[2] = z;
+    }
+    return (PyObject *)v;
+}
+
+static PyObject *
+_pg_vector4_from_doubles(double x, double y, double z, double w)
+{
+    pgVector *v = (pgVector *)pgVector_NEW(4);
+    if (v != NULL) {
+        v->coords[0] = x;
+        v->coords[1] = y;
+        v->coords[2] = z;
+        v->coords[3] = w;
+    }
+    return (PyObject *)v;
+}
+
+static int
+_pg_matrix4x4_coords_from_obj(PyObject *obj, double *out)
+{
+    if (pgMatrix4x4_Check(obj)) {
+        memcpy(out, ((pgMatrix4x4 *)obj)->values, 16 * sizeof(double));
+        return 1;
+    }
+    if (PySequence_Check(obj)) {
+        Py_ssize_t i, n = PySequence_Length(obj);
+        if (n < 0) {
+            /* __len__ raised; not usable as coords, don't leak the error */
+            PyErr_Clear();
+            return 0;
+        }
+        if (n != 16) {
+            return 0;
+        }
+        for (i = 0; i < 16; i++) {
+            PyObject *tmp = PySequence_ITEM(obj, i);
+            if (tmp == NULL) {
+                PyErr_Clear();
+                return 0;
+            }
+            out[i] = PyFloat_AsDouble(tmp);
+            Py_DECREF(tmp);
+            if (PyErr_Occurred()) {
+                PyErr_Clear();
+                return 0;
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int
+_pg_matrix4x4_set_from_iterable(pgMatrix4x4 *self, PyObject *iterable)
+{
+    Py_ssize_t i, n;
+    double tmp[16];
+    PyObject **items;
+    PyObject *seq = PySequence_Fast(
+        iterable, "Matrix4x4 requires a sequence of 16 numbers");
+    if (seq == NULL) {
+        return -1;
+    }
+    n = PySequence_Fast_GET_SIZE(seq);
+    if (n != 16) {
+        Py_DECREF(seq);
+        PyErr_SetString(PyExc_ValueError,
+                        "Matrix4x4 sequence must contain exactly 16 numbers");
+        return -1;
+    }
+    items = PySequence_Fast_ITEMS(seq);
+    for (i = 0; i < 16; i++) {
+        tmp[i] = PyFloat_AsDouble(items[i]);
+        if (tmp[i] == -1.0 && PyErr_Occurred()) {
+            Py_DECREF(seq);
+            return -1;
+        }
+    }
+    Py_DECREF(seq);
+    memcpy(self->values, tmp, sizeof(tmp));
+    return 0;
+}
+
+static PyObject *
+matrix4x4_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    pgMatrix4x4 *mat = (pgMatrix4x4 *)type->tp_alloc(type, 0);
+    if (mat != NULL) {
+        mat->values[0] = mat->values[5] = mat->values[10] = mat->values[15] =
+            1.0;
+        mat->epsilon = VECTOR_EPSILON;
+    }
+    return (PyObject *)mat;
+}
+
+static int
+matrix4x4_init(pgMatrix4x4 *self, PyObject *args, PyObject *kwds)
+{
+    Py_ssize_t n;
+
+    if (kwds != NULL && PyDict_Size(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError,
+                        "Matrix4x4 does not accept keyword arguments");
+        return -1;
+    }
+
+    n = PyTuple_GET_SIZE(args);
+    if (n == 0) {
+        return 0;
+    }
+    else if (n == 1) {
+        PyObject *arg = PyTuple_GET_ITEM(args, 0);
+        if (pgMatrix4x4_Check(arg)) {
+            memcpy(self->values, ((pgMatrix4x4 *)arg)->values,
+                   16 * sizeof(double));
+            self->epsilon = ((pgMatrix4x4 *)arg)->epsilon;
+            return 0;
+        }
+        return _pg_matrix4x4_set_from_iterable(self, arg);
+    }
+    else if (n == 16) {
+        return _pg_matrix4x4_set_from_iterable(self, args);
+    }
+
+    PyErr_SetString(PyExc_TypeError,
+                    "Matrix4x4 accepts no arguments (identity), another "
+                    "Matrix4x4, an iterable of 16 numbers, or 16 numbers");
+    return -1;
+}
+
+static void
+matrix4x4_dealloc(pgMatrix4x4 *self)
+{
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static PyObject *
+matrix4x4_identity(PyObject *cls, PyObject *_null)
+{
+    pgMatrix4x4 *m = _pg_matrix4x4_alloc();
+    if (m != NULL) {
+        m->values[0] = m->values[5] = m->values[10] = m->values[15] = 1.0;
+        m->epsilon = VECTOR_EPSILON;
+    }
+    return (PyObject *)m;
+}
+
+static PyObject *
+matrix4x4_zero(PyObject *cls, PyObject *_null)
+{
+    pgMatrix4x4 *m = _pg_matrix4x4_alloc();
+    if (m != NULL) {
+        m->epsilon = VECTOR_EPSILON;
+    }
+    return (PyObject *)m;
+}
+
+static PyObject *
+matrix4x4_diagonal(PyObject *cls, PyObject *args)
+{
+    double x, y, z, w;
+    double v[16] = {0};
+    if (!PyArg_ParseTuple(args, "dddd:diagonal", &x, &y, &z, &w)) {
+        return NULL;
+    }
+    v[0] = x;
+    v[5] = y;
+    v[10] = z;
+    v[15] = w;
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_from_rows(PyObject *cls, PyObject *args)
+{
+    PyObject *rows[4];
+    double v[16];
+    int i;
+    if (!PyArg_ParseTuple(args, "OOOO:from_rows", &rows[0], &rows[1], &rows[2],
+                          &rows[3])) {
+        return NULL;
+    }
+    for (i = 0; i < 4; i++) {
+        double c[4];
+        if (!pg_VectorCoordsFromObj(rows[i], 4, c)) {
+            return RAISE(PyExc_ValueError,
+                         "from_rows requires four sequences of 4 numbers");
+        }
+        v[i * 4 + 0] = c[0];
+        v[i * 4 + 1] = c[1];
+        v[i * 4 + 2] = c[2];
+        v[i * 4 + 3] = c[3];
+    }
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_from_columns(PyObject *cls, PyObject *args)
+{
+    PyObject *cols[4];
+    double v[16];
+    int j;
+    if (!PyArg_ParseTuple(args, "OOOO:from_columns", &cols[0], &cols[1],
+                          &cols[2], &cols[3])) {
+        return NULL;
+    }
+    for (j = 0; j < 4; j++) {
+        double c[4];
+        if (!pg_VectorCoordsFromObj(cols[j], 4, c)) {
+            return RAISE(PyExc_ValueError,
+                         "from_columns requires four sequences of 4 numbers");
+        }
+        v[0 * 4 + j] = c[0];
+        v[1 * 4 + j] = c[1];
+        v[2 * 4 + j] = c[2];
+        v[3 * 4 + j] = c[3];
+    }
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_translation(PyObject *cls, PyObject *arg)
+{
+    double c[3];
+    double v[16];
+    if (_pg_parse_vec3_arg(arg, c, "translation") < 0) {
+        return NULL;
+    }
+    _pg_fill_translation(v, c);
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_rotation_axis_angle(PyObject *cls, PyObject *args)
+{
+    PyObject *axis_obj;
+    double angle_deg;
+    double ax[3];
+    double v[16];
+    if (!PyArg_ParseTuple(args, "Od:rotation_axis_angle", &axis_obj,
+                          &angle_deg)) {
+        return NULL;
+    }
+    if (_pg_parse_vec3_arg(axis_obj, ax, "rotation_axis_angle axis") < 0) {
+        return NULL;
+    }
+    if (!_pg_fill_rotation_axis_angle(v, ax, angle_deg)) {
+        return RAISE(PyExc_ValueError, "rotation axis must be non-zero");
+    }
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_scaling(PyObject *cls, PyObject *arg)
+{
+    double s[3];
+    double v[16];
+    if (_pg_parse_scale_arg(arg, s, "scaling") < 0) {
+        return NULL;
+    }
+    _pg_fill_scale(v, s[0], s[1], s[2]);
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_translate(pgMatrix4x4 *self, PyObject *arg)
+{
+    double c[3];
+    PyObject *m;
+    if (_pg_parse_vec3_arg(arg, c, "translate") < 0) {
+        return NULL;
+    }
+    m = _pg_matrix4x4_from_values_epsilon(self->values, self);
+    if (m != NULL) {
+        _pg_apply_translation(((pgMatrix4x4 *)m)->values, c);
+    }
+    return m;
+}
+
+static PyObject *
+matrix4x4_translate_ip(pgMatrix4x4 *self, PyObject *arg)
+{
+    double c[3];
+    if (_pg_parse_vec3_arg(arg, c, "translate_ip") < 0) {
+        return NULL;
+    }
+    _pg_apply_translation(self->values, c);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+matrix4x4_rotate(pgMatrix4x4 *self, PyObject *args)
+{
+    PyObject *axis_obj, *m;
+    double angle_deg;
+    double ax[3], r[16];
+    if (!PyArg_ParseTuple(args, "Od:rotate", &axis_obj, &angle_deg)) {
+        return NULL;
+    }
+    if (_pg_parse_vec3_arg(axis_obj, ax, "rotate axis") < 0) {
+        return NULL;
+    }
+    if (!_pg_fill_rotation_axis_angle(r, ax, angle_deg)) {
+        return RAISE(PyExc_ValueError, "rotation axis must be non-zero");
+    }
+    m = _pg_matrix4x4_from_values_epsilon(self->values, self);
+    if (m != NULL) {
+        _pg_apply_rotation(((pgMatrix4x4 *)m)->values, r);
+    }
+    return m;
+}
+
+static PyObject *
+matrix4x4_rotate_ip(pgMatrix4x4 *self, PyObject *args)
+{
+    PyObject *axis_obj;
+    double angle_deg;
+    double ax[3], r[16];
+    if (!PyArg_ParseTuple(args, "Od:rotate_ip", &axis_obj, &angle_deg)) {
+        return NULL;
+    }
+    if (_pg_parse_vec3_arg(axis_obj, ax, "rotate_ip axis") < 0) {
+        return NULL;
+    }
+    if (!_pg_fill_rotation_axis_angle(r, ax, angle_deg)) {
+        return RAISE(PyExc_ValueError, "rotation axis must be non-zero");
+    }
+    _pg_apply_rotation(self->values, r);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+matrix4x4_scale(pgMatrix4x4 *self, PyObject *arg)
+{
+    double s[3];
+    PyObject *m;
+    if (_pg_parse_scale_arg(arg, s, "scale") < 0) {
+        return NULL;
+    }
+    m = _pg_matrix4x4_from_values_epsilon(self->values, self);
+    if (m != NULL) {
+        _pg_apply_scale(((pgMatrix4x4 *)m)->values, s);
+    }
+    return m;
+}
+
+static PyObject *
+matrix4x4_scale_ip(pgMatrix4x4 *self, PyObject *arg)
+{
+    double s[3];
+    if (_pg_parse_scale_arg(arg, s, "scale_ip") < 0) {
+        return NULL;
+    }
+    _pg_apply_scale(self->values, s);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+matrix4x4_look_at(PyObject *cls, PyObject *args)
+{
+    PyObject *eye_o, *target_o, *up_o;
+    double eye[3], target[3], up[3];
+    double f[3], r[3], u[3];
+    double flen, rlen;
+    double v[16];
+    if (!PyArg_ParseTuple(args, "OOO:look_at", &eye_o, &target_o, &up_o)) {
+        return NULL;
+    }
+    if (!pg_VectorCoordsFromObj(eye_o, 3, eye) ||
+        !pg_VectorCoordsFromObj(target_o, 3, target) ||
+        !pg_VectorCoordsFromObj(up_o, 3, up)) {
+        return RAISE(PyExc_TypeError,
+                     "look_at requires Vector3 or 3-number sequences for eye, "
+                     "target, and up");
+    }
+    f[0] = target[0] - eye[0];
+    f[1] = target[1] - eye[1];
+    f[2] = target[2] - eye[2];
+    flen = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    if (flen < 1e-12) {
+        return RAISE(PyExc_ValueError,
+                     "look_at: eye and target must not be equal");
+    }
+    f[0] /= flen;
+    f[1] /= flen;
+    f[2] /= flen;
+    r[0] = up[1] * f[2] - up[2] * f[1];
+    r[1] = up[2] * f[0] - up[0] * f[2];
+    r[2] = up[0] * f[1] - up[1] * f[0];
+    rlen = sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    if (rlen < 1e-12) {
+        return RAISE(PyExc_ValueError,
+                     "look_at: up vector is parallel to the view direction");
+    }
+    r[0] /= rlen;
+    r[1] /= rlen;
+    r[2] /= rlen;
+    u[0] = f[1] * r[2] - f[2] * r[1];
+    u[1] = f[2] * r[0] - f[0] * r[2];
+    u[2] = f[0] * r[1] - f[1] * r[0];
+    v[0] = r[0];
+    v[1] = r[1];
+    v[2] = r[2];
+    v[3] = -(r[0] * eye[0] + r[1] * eye[1] + r[2] * eye[2]);
+    v[4] = u[0];
+    v[5] = u[1];
+    v[6] = u[2];
+    v[7] = -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]);
+    v[8] = f[0];
+    v[9] = f[1];
+    v[10] = f[2];
+    v[11] = -(f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2]);
+    v[12] = 0.0;
+    v[13] = 0.0;
+    v[14] = 0.0;
+    v[15] = 1.0;
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_perspective(PyObject *cls, PyObject *args)
+{
+    double fov, aspect, near, far, tan_half, f;
+    double v[16] = {0};
+    if (!PyArg_ParseTuple(args, "dddd:perspective", &fov, &aspect, &near,
+                          &far)) {
+        return NULL;
+    }
+    if (!(fov > 0.0 && fov < 180.0)) {
+        return RAISE(PyExc_ValueError,
+                     "perspective: fov must be in the open interval (0, 180) "
+                     "degrees");
+    }
+    if (aspect <= 0.0) {
+        return RAISE(PyExc_ValueError, "perspective: aspect must be positive");
+    }
+    if (near <= 0.0) {
+        return RAISE(PyExc_ValueError, "perspective: near must be positive");
+    }
+    if (far <= near) {
+        return RAISE(PyExc_ValueError,
+                     "perspective: far must be greater than near");
+    }
+    tan_half = tan(DEG2RAD(fov) / 2.0);
+    f = 1.0 / tan_half;
+    v[0] = f / aspect;
+    v[5] = f;
+    v[10] = far / (far - near);
+    v[11] = -near * far / (far - near);
+    v[14] = 1.0;
+    return _pg_matrix4x4_from_values(v);
+}
+
+static PyObject *
+matrix4x4_orthographic(PyObject *cls, PyObject *args)
+{
+    double l, r, b, t, near, far;
+    double v[16] = {0};
+    if (!PyArg_ParseTuple(args, "dddddd:orthographic", &l, &r, &b, &t, &near,
+                          &far)) {
+        return NULL;
+    }
+    if (r == l) {
+        return RAISE(PyExc_ValueError,
+                     "orthographic: left and right must differ");
+    }
+    if (t == b) {
+        return RAISE(PyExc_ValueError,
+                     "orthographic: bottom and top must differ");
+    }
+    if (far <= near) {
+        return RAISE(PyExc_ValueError,
+                     "orthographic: far must be greater than near");
+    }
+    v[0] = 2.0 / (r - l);
+    v[3] = -(r + l) / (r - l);
+    v[5] = 2.0 / (t - b);
+    v[7] = -(t + b) / (t - b);
+    v[10] = 1.0 / (far - near);
+    v[11] = -near / (far - near);
+    v[15] = 1.0;
+    return _pg_matrix4x4_from_values(v);
+}
+
+static Py_ssize_t
+matrix4x4_length(pgMatrix4x4 *self)
+{
+    return 4;
+}
+
+static PyObject *
+matrix4x4_subscript(pgMatrix4x4 *self, PyObject *key)
+{
+    if (PyTuple_Check(key)) {
+        Py_ssize_t row, col;
+        if (PyTuple_GET_SIZE(key) != 2) {
+            return RAISE(PyExc_TypeError,
+                         "Matrix4x4 index must be [row, column] or [row]");
+        }
+        row = PyNumber_AsSsize_t(PyTuple_GET_ITEM(key, 0), PyExc_IndexError);
+        if (row == -1 && PyErr_Occurred()) {
+            return NULL;
+        }
+        col = PyNumber_AsSsize_t(PyTuple_GET_ITEM(key, 1), PyExc_IndexError);
+        if (col == -1 && PyErr_Occurred()) {
+            return NULL;
+        }
+        if (row < 0) {
+            row += 4;
+        }
+        if (col < 0) {
+            col += 4;
+        }
+        if (row < 0 || row >= 4 || col < 0 || col >= 4) {
+            return RAISE(PyExc_IndexError, "Matrix4x4 index out of range");
+        }
+        return PyFloat_FromDouble(self->values[row * 4 + col]);
+    }
+    if (PyIndex_Check(key)) {
+        Py_ssize_t row = PyNumber_AsSsize_t(key, PyExc_IndexError);
+        const double *r;
+        if (row == -1 && PyErr_Occurred()) {
+            return NULL;
+        }
+        if (row < 0) {
+            row += 4;
+        }
+        if (row < 0 || row >= 4) {
+            return RAISE(PyExc_IndexError, "Matrix4x4 row index out of range");
+        }
+        r = &self->values[row * 4];
+        return _pg_vector4_from_doubles(r[0], r[1], r[2], r[3]);
+    }
+    return RAISE(PyExc_TypeError,
+                 "Matrix4x4 index must be an int (row) or a (row, column) "
+                 "tuple");
+}
+
+static int
+matrix4x4_ass_subscript(pgMatrix4x4 *self, PyObject *key, PyObject *value)
+{
+    Py_ssize_t row, col;
+    double d;
+    if (value == NULL) {
+        PyErr_SetString(PyExc_TypeError,
+                        "Matrix4x4 does not support item deletion");
+        return -1;
+    }
+    if (!PyTuple_Check(key) || PyTuple_GET_SIZE(key) != 2) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "Matrix4x4 assignment index must be a (row, column) tuple");
+        return -1;
+    }
+    row = PyNumber_AsSsize_t(PyTuple_GET_ITEM(key, 0), PyExc_IndexError);
+    if (row == -1 && PyErr_Occurred()) {
+        return -1;
+    }
+    col = PyNumber_AsSsize_t(PyTuple_GET_ITEM(key, 1), PyExc_IndexError);
+    if (col == -1 && PyErr_Occurred()) {
+        return -1;
+    }
+    if (row < 0) {
+        row += 4;
+    }
+    if (col < 0) {
+        col += 4;
+    }
+    if (row < 0 || row >= 4 || col < 0 || col >= 4) {
+        PyErr_SetString(PyExc_IndexError, "Matrix4x4 index out of range");
+        return -1;
+    }
+    d = PyFloat_AsDouble(value);
+    if (d == -1.0 && PyErr_Occurred()) {
+        return -1;
+    }
+    self->values[row * 4 + col] = d;
+    return 0;
+}
+
+static PyMappingMethods matrix4x4_as_mapping = {
+    .mp_length = (lenfunc)matrix4x4_length,
+    .mp_subscript = (binaryfunc)matrix4x4_subscript,
+    .mp_ass_subscript = (objobjargproc)matrix4x4_ass_subscript,
+};
+
+static void
+matrix4x4iter_dealloc(matrix4x4iter *it)
+{
+    Py_XDECREF(it->mat);
+    Py_TYPE(it)->tp_free(it);
+}
+
+static PyObject *
+matrix4x4iter_next(matrix4x4iter *it)
+{
+    if (it->mat == NULL) {
+        return NULL;
+    }
+    if (it->it_index < 4) {
+        const double *r = &it->mat->values[it->it_index * 4];
+        ++(it->it_index);
+        return _pg_vector4_from_doubles(r[0], r[1], r[2], r[3]);
+    }
+    Py_CLEAR(it->mat);
+    return NULL;
+}
+
+static PyObject *
+matrix4x4iter_len(matrix4x4iter *it, PyObject *_null)
+{
+    Py_ssize_t len = 0;
+    if (it->mat != NULL) {
+        len = 4 - it->it_index;
+    }
+    return PyLong_FromSsize_t(len);
+}
+
+static PyMethodDef matrix4x4iter_methods[] = {
+    {"__length_hint__", (PyCFunction)matrix4x4iter_len, METH_NOARGS, NULL},
+    {NULL, NULL} /* sentinel */
+};
+
+static PyTypeObject pgMatrix4x4Iter_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.math.Matrix4x4Iterator",
+    .tp_basicsize = sizeof(matrix4x4iter),
+    .tp_dealloc = (destructor)matrix4x4iter_dealloc,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_iter = PyObject_SelfIter,
+    .tp_iternext = (iternextfunc)matrix4x4iter_next,
+    .tp_methods = matrix4x4iter_methods,
+};
+
+static PyObject *
+matrix4x4_iter(pgMatrix4x4 *self)
+{
+    matrix4x4iter *it = PyObject_New(matrix4x4iter, &pgMatrix4x4Iter_Type);
+    if (it == NULL) {
+        return NULL;
+    }
+    it->it_index = 0;
+    it->mat = (pgMatrix4x4 *)Py_NewRef((PyObject *)self);
+    return (PyObject *)it;
+}
+
+static PyObject *
+matrix4x4_repr(pgMatrix4x4 *self)
+{
+    char buffer[600];
+    const double *v = self->values;
+    int tmp =
+        PyOS_snprintf(buffer, sizeof(buffer),
+                      "Matrix4x4(\n    %g, %g, %g, %g,\n    %g, %g, %g, %g,\n "
+                      "   %g, %g, %g, "
+                      "%g,\n    %g, %g, %g, %g\n)",
+                      v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+                      v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
+    if (tmp < 0 || tmp >= (int)sizeof(buffer)) {
+        return RAISE(PyExc_RuntimeError,
+                     "internal error while formatting Matrix4x4");
+    }
+    return PyUnicode_FromString(buffer);
+}
+
+static PyObject *
+matrix4x4_richcompare(PyObject *o1, PyObject *o2, int op)
+{
+    pgMatrix4x4 *self;
+    PyObject *other;
+    double ov[16];
+    int i, equal = 1;
+
+    if (op != Py_EQ && op != Py_NE) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    if (pgMatrix4x4_Check(o1)) {
+        self = (pgMatrix4x4 *)o1;
+        other = o2;
+    }
+    else {
+        self = (pgMatrix4x4 *)o2;
+        other = o1;
+    }
+    if (!_pg_matrix4x4_coords_from_obj(other, ov)) {
+        if (op == Py_EQ) {
+            Py_RETURN_FALSE;
+        }
+        Py_RETURN_TRUE;
+    }
+    for (i = 0; i < 16; i++) {
+        double diff = self->values[i] - ov[i];
+        if ((diff != diff) || (fabs(diff) > self->epsilon)) {
+            equal = 0;
+            break;
+        }
+    }
+    if (op == Py_EQ) {
+        return PyBool_FromLong(equal);
+    }
+    return PyBool_FromLong(!equal);
+}
+
+static PyObject *
+matrix4x4_equals(pgMatrix4x4 *self, PyObject *args, PyObject *kwds)
+{
+    PyObject *other;
+    double tolerance = self->epsilon;
+    double ov[16];
+    int i;
+    static char *kwlist[] = {"other", "tolerance", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|d:equals", kwlist, &other,
+                                     &tolerance)) {
+        return NULL;
+    }
+    if (!_pg_matrix4x4_coords_from_obj(other, ov)) {
+        return RAISE(PyExc_TypeError,
+                     "equals() argument must be a Matrix4x4 or a sequence of "
+                     "16 numbers");
+    }
+    for (i = 0; i < 16; i++) {
+        double diff = self->values[i] - ov[i];
+        if ((diff != diff) || (fabs(diff) > tolerance)) {
+            Py_RETURN_FALSE;
+        }
+    }
+    Py_RETURN_TRUE;
+}
+
+static PyObject *
+matrix4x4_copy(pgMatrix4x4 *self, PyObject *_null)
+{
+    PyObject *m = _pg_matrix4x4_from_values(self->values);
+    if (m != NULL) {
+        ((pgMatrix4x4 *)m)->epsilon = self->epsilon;
+    }
+    return m;
+}
+
+static PyObject *
+matrix4x4_get_rows(pgMatrix4x4 *self, void *closure)
+{
+    return PyLong_FromLong(4);
+}
+
+static PyObject *
+matrix4x4_get_columns(pgMatrix4x4 *self, void *closure)
+{
+    return PyLong_FromLong(4);
+}
+
+static PyObject *
+matrix4x4_get_trace(pgMatrix4x4 *self, void *closure)
+{
+    return PyFloat_FromDouble(self->values[0] + self->values[5] +
+                              self->values[10] + self->values[15]);
+}
+
+static double
+_pg_matrix4x4_cofactor(const double *m, int row, int col)
+{
+    static const int other[4][3] = {
+        {1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}};
+    const int *rr = other[row];
+    const int *cc = other[col];
+    double d =
+        m[rr[0] * 4 + cc[0]] * (m[rr[1] * 4 + cc[1]] * m[rr[2] * 4 + cc[2]] -
+                                m[rr[1] * 4 + cc[2]] * m[rr[2] * 4 + cc[1]]) -
+        m[rr[0] * 4 + cc[1]] * (m[rr[1] * 4 + cc[0]] * m[rr[2] * 4 + cc[2]] -
+                                m[rr[1] * 4 + cc[2]] * m[rr[2] * 4 + cc[0]]) +
+        m[rr[0] * 4 + cc[2]] * (m[rr[1] * 4 + cc[0]] * m[rr[2] * 4 + cc[1]] -
+                                m[rr[1] * 4 + cc[1]] * m[rr[2] * 4 + cc[0]]);
+    return ((row + col) & 1) ? -d : d;
+}
+
+static double
+_pg_matrix4x4_determinant(const double *m)
+{
+    double s0 = m[0] * m[5] - m[1] * m[4];
+    double s1 = m[0] * m[6] - m[2] * m[4];
+    double s2 = m[0] * m[7] - m[3] * m[4];
+    double s3 = m[1] * m[6] - m[2] * m[5];
+    double s4 = m[1] * m[7] - m[3] * m[5];
+    double s5 = m[2] * m[7] - m[3] * m[6];
+    double c5 = m[10] * m[15] - m[11] * m[14];
+    double c4 = m[9] * m[15] - m[11] * m[13];
+    double c3 = m[9] * m[14] - m[10] * m[13];
+    double c2 = m[8] * m[15] - m[11] * m[12];
+    double c1 = m[8] * m[14] - m[10] * m[12];
+    double c0 = m[8] * m[13] - m[9] * m[12];
+    return s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
+}
+
+static int
+_pg_matrix4x4_invert(const double *m, double *out)
+{
+    double cof[16];
+    double det, idet;
+    int r, c;
+    for (r = 0; r < 4; r++) {
+        for (c = 0; c < 4; c++) {
+            cof[r * 4 + c] = _pg_matrix4x4_cofactor(m, r, c);
+        }
+    }
+    det = m[0] * cof[0] + m[1] * cof[1] + m[2] * cof[2] + m[3] * cof[3];
+    if (det == 0.0 || !isfinite(det)) {
+        return 0;
+    }
+    idet = 1.0 / det;
+    for (r = 0; r < 4; r++) {
+        for (c = 0; c < 4; c++) {
+            double value = cof[c * 4 + r] * idet;
+            if (!isfinite(value)) {
+                return 0;
+            }
+            out[r * 4 + c] = value;
+        }
+    }
+    return 1;
+}
+
+static PyObject *
+matrix4x4_get_determinant(pgMatrix4x4 *self, void *closure)
+{
+    return PyFloat_FromDouble(_pg_matrix4x4_determinant(self->values));
+}
+
+static PyObject *
+matrix4x4_transpose(pgMatrix4x4 *self, PyObject *_null)
+{
+    double v[16];
+    int r, c;
+    for (r = 0; r < 4; r++) {
+        for (c = 0; c < 4; c++) {
+            v[r * 4 + c] = self->values[c * 4 + r];
+        }
+    }
+    return _pg_matrix4x4_from_values_epsilon(v, self);
+}
+
+static PyObject *
+matrix4x4_transpose_ip(pgMatrix4x4 *self, PyObject *_null)
+{
+    double v[16];
+    int r, c;
+    for (r = 0; r < 4; r++) {
+        for (c = 0; c < 4; c++) {
+            v[r * 4 + c] = self->values[c * 4 + r];
+        }
+    }
+    memcpy(self->values, v, sizeof(v));
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+matrix4x4_invert(pgMatrix4x4 *self, PyObject *_null)
+{
+    double out[16];
+    if (!_pg_matrix4x4_invert(self->values, out)) {
+        return RAISE(PyExc_ValueError, "matrix is not invertible (singular)");
+    }
+    return _pg_matrix4x4_from_values_epsilon(out, self);
+}
+
+static PyObject *
+matrix4x4_invert_ip(pgMatrix4x4 *self, PyObject *_null)
+{
+    double out[16];
+    if (!_pg_matrix4x4_invert(self->values, out)) {
+        return RAISE(PyExc_ValueError, "matrix is not invertible (singular)");
+    }
+    memcpy(self->values, out, sizeof(out));
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+matrix4x4_is_identity(pgMatrix4x4 *self, PyObject *args, PyObject *kwds)
+{
+    double tol = self->epsilon;
+    double id[16];
+    int i;
+    static char *kwlist[] = {"tolerance", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|d:is_identity", kwlist,
+                                     &tol)) {
+        return NULL;
+    }
+    _pg_matrix4x4_set_identity(id);
+    for (i = 0; i < 16; i++) {
+        double diff = self->values[i] - id[i];
+        if ((diff != diff) || (fabs(diff) > tol)) {
+            Py_RETURN_FALSE;
+        }
+    }
+    Py_RETURN_TRUE;
+}
+
+static PyObject *
+matrix4x4_is_affine(pgMatrix4x4 *self, PyObject *args, PyObject *kwds)
+{
+    double tol = self->epsilon;
+    const double *v = self->values;
+    static char *kwlist[] = {"tolerance", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|d:is_affine", kwlist,
+                                     &tol)) {
+        return NULL;
+    }
+    if ((v[12] != v[12]) || (v[13] != v[13]) || (v[14] != v[14]) ||
+        (v[15] != v[15]) || fabs(v[12]) > tol || fabs(v[13]) > tol ||
+        fabs(v[14]) > tol || fabs(v[15] - 1.0) > tol) {
+        Py_RETURN_FALSE;
+    }
+    Py_RETURN_TRUE;
+}
+
+static PyObject *
+matrix4x4_is_orthogonal(pgMatrix4x4 *self, PyObject *args, PyObject *kwds)
+{
+    double tol = self->epsilon;
+    const double *m = self->values;
+    int i, j, k;
+    static char *kwlist[] = {"tolerance", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|d:is_orthogonal", kwlist,
+                                     &tol)) {
+        return NULL;
+    }
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            double dot = 0.0;
+            double expected = (i == j) ? 1.0 : 0.0;
+            for (k = 0; k < 4; k++) {
+                dot += m[k * 4 + i] * m[k * 4 + j];
+            }
+            if ((dot != dot) || fabs(dot - expected) > tol) {
+                Py_RETURN_FALSE;
+            }
+        }
+    }
+    Py_RETURN_TRUE;
+}
+
+static PyObject *
+matrix4x4_add(PyObject *o1, PyObject *o2)
+{
+    const double *a, *b;
+    double v[16];
+    int i;
+    if (!pgMatrix4x4_Check(o1) || !pgMatrix4x4_Check(o2)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    a = ((pgMatrix4x4 *)o1)->values;
+    b = ((pgMatrix4x4 *)o2)->values;
+    for (i = 0; i < 16; i++) {
+        v[i] = a[i] + b[i];
+    }
+    return _pg_matrix4x4_from_values_epsilon(v, (pgMatrix4x4 *)o1);
+}
+
+static PyObject *
+matrix4x4_sub(PyObject *o1, PyObject *o2)
+{
+    const double *a, *b;
+    double v[16];
+    int i;
+    if (!pgMatrix4x4_Check(o1) || !pgMatrix4x4_Check(o2)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    a = ((pgMatrix4x4 *)o1)->values;
+    b = ((pgMatrix4x4 *)o2)->values;
+    for (i = 0; i < 16; i++) {
+        v[i] = a[i] - b[i];
+    }
+    return _pg_matrix4x4_from_values_epsilon(v, (pgMatrix4x4 *)o1);
+}
+
+static PyObject *
+matrix4x4_neg(pgMatrix4x4 *self)
+{
+    double v[16];
+    int i;
+    for (i = 0; i < 16; i++) {
+        v[i] = -self->values[i];
+    }
+    return _pg_matrix4x4_from_values_epsilon(v, self);
+}
+
+static PyObject *
+matrix4x4_mul(PyObject *o1, PyObject *o2)
+{
+    pgMatrix4x4 *mat;
+    PyObject *num;
+    double s, v[16];
+    int i;
+    if (pgMatrix4x4_Check(o1)) {
+        mat = (pgMatrix4x4 *)o1;
+        num = o2;
+    }
+    else {
+        mat = (pgMatrix4x4 *)o2;
+        num = o1;
+    }
+    if (!RealNumber_Check(num)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    s = PyFloat_AsDouble(num);
+    if (s == -1.0 && PyErr_Occurred()) {
+        return NULL;
+    }
+    for (i = 0; i < 16; i++) {
+        v[i] = mat->values[i] * s;
+    }
+    return _pg_matrix4x4_from_values_epsilon(v, mat);
+}
+
+static PyObject *
+matrix4x4_truediv(PyObject *o1, PyObject *o2)
+{
+    double s, v[16];
+    int i;
+    if (!pgMatrix4x4_Check(o1) || !RealNumber_Check(o2)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    s = PyFloat_AsDouble(o2);
+    if (s == -1.0 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (s == 0.0) {
+        return RAISE(PyExc_ZeroDivisionError, "Matrix4x4 division by zero");
+    }
+    for (i = 0; i < 16; i++) {
+        v[i] = ((pgMatrix4x4 *)o1)->values[i] / s;
+    }
+    return _pg_matrix4x4_from_values_epsilon(v, (pgMatrix4x4 *)o1);
+}
+
+static PyObject *
+_pg_matrix4x4_transform_point_impl(const double *a, double x, double y,
+                                   double z)
+{
+    double in[4] = {x, y, z, 1.0};
+    double r[4];
+    double inv;
+    int i;
+    for (i = 0; i < 4; i++) {
+        r[i] = a[i * 4 + 0] * in[0] + a[i * 4 + 1] * in[1] +
+               a[i * 4 + 2] * in[2] + a[i * 4 + 3] * in[3];
+    }
+    if (r[3] == 0.0) {
+        return RAISE(PyExc_ValueError,
+                     "cannot transform point: resulting homogeneous w is "
+                     "zero");
+    }
+    inv = 1.0 / r[3];
+    return _pg_vector3_from_doubles(r[0] * inv, r[1] * inv, r[2] * inv);
+}
+
+static PyObject *
+matrix4x4_matmul(PyObject *o1, PyObject *o2)
+{
+    const double *a;
+    if (!pgMatrix4x4_Check(o1)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    a = ((pgMatrix4x4 *)o1)->values;
+    if (pgMatrix4x4_Check(o2)) {
+        const double *b = ((pgMatrix4x4 *)o2)->values;
+        double v[16];
+        _pg_mat4_mul(a, b, v);
+        return _pg_matrix4x4_from_values_epsilon(v, (pgMatrix4x4 *)o1);
+    }
+    if (pgVector4_Check(o2)) {
+        const double *vv = ((pgVector *)o2)->coords;
+        double r[4];
+        int i;
+        for (i = 0; i < 4; i++) {
+            r[i] = a[i * 4 + 0] * vv[0] + a[i * 4 + 1] * vv[1] +
+                   a[i * 4 + 2] * vv[2] + a[i * 4 + 3] * vv[3];
+        }
+        return _pg_vector4_from_doubles(r[0], r[1], r[2], r[3]);
+    }
+    if (pgVector3_Check(o2)) {
+        const double *vv = ((pgVector *)o2)->coords;
+        return _pg_matrix4x4_transform_point_impl(a, vv[0], vv[1], vv[2]);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+static PyNumberMethods matrix4x4_as_number = {
+    .nb_add = (binaryfunc)matrix4x4_add,
+    .nb_subtract = (binaryfunc)matrix4x4_sub,
+    .nb_multiply = (binaryfunc)matrix4x4_mul,
+    .nb_negative = (unaryfunc)matrix4x4_neg,
+    .nb_true_divide = (binaryfunc)matrix4x4_truediv,
+    .nb_matrix_multiply = (binaryfunc)matrix4x4_matmul,
+};
+
+static PyObject *
+matrix4x4_transform_point(pgMatrix4x4 *self, PyObject *arg)
+{
+    double c[3];
+    if (_pg_parse_vec3_arg(arg, c, "transform_point") < 0) {
+        return NULL;
+    }
+    return _pg_matrix4x4_transform_point_impl(self->values, c[0], c[1], c[2]);
+}
+
+static PyObject *
+matrix4x4_transform_direction(pgMatrix4x4 *self, PyObject *arg)
+{
+    double c[3];
+    const double *a = self->values;
+    double in[4], r[3];
+    int i;
+    if (_pg_parse_vec3_arg(arg, c, "transform_direction") < 0) {
+        return NULL;
+    }
+    in[0] = c[0];
+    in[1] = c[1];
+    in[2] = c[2];
+    in[3] = 0.0;
+    for (i = 0; i < 3; i++) {
+        r[i] = a[i * 4 + 0] * in[0] + a[i * 4 + 1] * in[1] +
+               a[i * 4 + 2] * in[2] + a[i * 4 + 3] * in[3];
+    }
+    return _pg_vector3_from_doubles(r[0], r[1], r[2]);
+}
+
+static PyObject *
+matrix4x4_get_translation(pgMatrix4x4 *self, PyObject *_null)
+{
+    return _pg_vector3_from_doubles(self->values[3], self->values[7],
+                                    self->values[11]);
+}
+
+static PyObject *
+matrix4x4_get_row(pgMatrix4x4 *self, PyObject *arg)
+{
+    Py_ssize_t i = PyNumber_AsSsize_t(arg, PyExc_IndexError);
+    const double *r;
+    if (i == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (i < 0) {
+        i += 4;
+    }
+    if (i < 0 || i >= 4) {
+        return RAISE(PyExc_IndexError, "Matrix4x4 row index out of range");
+    }
+    r = &self->values[i * 4];
+    return _pg_vector4_from_doubles(r[0], r[1], r[2], r[3]);
+}
+
+static PyObject *
+matrix4x4_get_column(pgMatrix4x4 *self, PyObject *arg)
+{
+    Py_ssize_t j = PyNumber_AsSsize_t(arg, PyExc_IndexError);
+    const double *m = self->values;
+    if (j == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (j < 0) {
+        j += 4;
+    }
+    if (j < 0 || j >= 4) {
+        return RAISE(PyExc_IndexError, "Matrix4x4 column index out of range");
+    }
+    return _pg_vector4_from_doubles(m[0 * 4 + j], m[1 * 4 + j], m[2 * 4 + j],
+                                    m[3 * 4 + j]);
+}
+
+static PyObject *
+matrix4x4_to_tuple(pgMatrix4x4 *self, PyObject *_null)
+{
+    int i;
+    PyObject *t = PyTuple_New(16);
+    if (t == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < 16; i++) {
+        PyObject *f = PyFloat_FromDouble(self->values[i]);
+        if (f == NULL) {
+            Py_DECREF(t);
+            return NULL;
+        }
+        PyTuple_SET_ITEM(t, i, f);
+    }
+    return t;
+}
+
+static PyObject *
+matrix4x4_to_list(pgMatrix4x4 *self, PyObject *_null)
+{
+    int i;
+    PyObject *l = PyList_New(16);
+    if (l == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < 16; i++) {
+        PyObject *f = PyFloat_FromDouble(self->values[i]);
+        if (f == NULL) {
+            Py_DECREF(l);
+            return NULL;
+        }
+        PyList_SET_ITEM(l, i, f);
+    }
+    return l;
+}
+
+static PyMethodDef matrix4x4_methods[] = {
+    {"identity", (PyCFunction)matrix4x4_identity, METH_NOARGS | METH_CLASS,
+     DOC_MATH_MATRIX4X4_IDENTITY},
+    {"zero", (PyCFunction)matrix4x4_zero, METH_NOARGS | METH_CLASS,
+     DOC_MATH_MATRIX4X4_ZERO},
+    {"diagonal", (PyCFunction)matrix4x4_diagonal, METH_VARARGS | METH_CLASS,
+     DOC_MATH_MATRIX4X4_DIAGONAL},
+    {"from_rows", (PyCFunction)matrix4x4_from_rows, METH_VARARGS | METH_CLASS,
+     DOC_MATH_MATRIX4X4_FROMROWS},
+    {"from_columns", (PyCFunction)matrix4x4_from_columns,
+     METH_VARARGS | METH_CLASS, DOC_MATH_MATRIX4X4_FROMCOLUMNS},
+    {"translation", (PyCFunction)matrix4x4_translation, METH_O | METH_CLASS,
+     DOC_MATH_MATRIX4X4_TRANSLATION},
+    {"rotation_axis_angle", (PyCFunction)matrix4x4_rotation_axis_angle,
+     METH_VARARGS | METH_CLASS, DOC_MATH_MATRIX4X4_ROTATIONAXISANGLE},
+    {"scaling", (PyCFunction)matrix4x4_scaling, METH_O | METH_CLASS,
+     DOC_MATH_MATRIX4X4_SCALING},
+    {"look_at", (PyCFunction)matrix4x4_look_at, METH_VARARGS | METH_CLASS,
+     DOC_MATH_MATRIX4X4_LOOKAT},
+    {"perspective", (PyCFunction)matrix4x4_perspective,
+     METH_VARARGS | METH_CLASS, DOC_MATH_MATRIX4X4_PERSPECTIVE},
+    {"orthographic", (PyCFunction)matrix4x4_orthographic,
+     METH_VARARGS | METH_CLASS, DOC_MATH_MATRIX4X4_ORTHOGRAPHIC},
+    {"transform_point", (PyCFunction)matrix4x4_transform_point, METH_O,
+     DOC_MATH_MATRIX4X4_TRANSFORMPOINT},
+    {"transform_direction", (PyCFunction)matrix4x4_transform_direction, METH_O,
+     DOC_MATH_MATRIX4X4_TRANSFORMDIRECTION},
+    {"translate", (PyCFunction)matrix4x4_translate, METH_O,
+     DOC_MATH_MATRIX4X4_TRANSLATE},
+    {"translate_ip", (PyCFunction)matrix4x4_translate_ip, METH_O,
+     DOC_MATH_MATRIX4X4_TRANSLATEIP},
+    {"rotate", (PyCFunction)matrix4x4_rotate, METH_VARARGS,
+     DOC_MATH_MATRIX4X4_ROTATE},
+    {"rotate_ip", (PyCFunction)matrix4x4_rotate_ip, METH_VARARGS,
+     DOC_MATH_MATRIX4X4_ROTATEIP},
+    {"scale", (PyCFunction)matrix4x4_scale, METH_O, DOC_MATH_MATRIX4X4_SCALE},
+    {"scale_ip", (PyCFunction)matrix4x4_scale_ip, METH_O,
+     DOC_MATH_MATRIX4X4_SCALEIP},
+    {"transpose", (PyCFunction)matrix4x4_transpose, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_TRANSPOSE},
+    {"transpose_ip", (PyCFunction)matrix4x4_transpose_ip, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_TRANSPOSEIP},
+    {"invert", (PyCFunction)matrix4x4_invert, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_INVERT},
+    {"invert_ip", (PyCFunction)matrix4x4_invert_ip, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_INVERTIP},
+    {"is_identity", (PyCFunction)matrix4x4_is_identity,
+     METH_VARARGS | METH_KEYWORDS, DOC_MATH_MATRIX4X4_ISIDENTITY},
+    {"is_affine", (PyCFunction)matrix4x4_is_affine,
+     METH_VARARGS | METH_KEYWORDS, DOC_MATH_MATRIX4X4_ISAFFINE},
+    {"is_orthogonal", (PyCFunction)matrix4x4_is_orthogonal,
+     METH_VARARGS | METH_KEYWORDS, DOC_MATH_MATRIX4X4_ISORTHOGONAL},
+    {"get_translation", (PyCFunction)matrix4x4_get_translation, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_GETTRANSLATION},
+    {"get_row", (PyCFunction)matrix4x4_get_row, METH_O,
+     DOC_MATH_MATRIX4X4_GETROW},
+    {"get_column", (PyCFunction)matrix4x4_get_column, METH_O,
+     DOC_MATH_MATRIX4X4_GETCOLUMN},
+    {"to_tuple", (PyCFunction)matrix4x4_to_tuple, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_TOTUPLE},
+    {"to_list", (PyCFunction)matrix4x4_to_list, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_TOLIST},
+    {"equals", (PyCFunction)matrix4x4_equals, METH_VARARGS | METH_KEYWORDS,
+     DOC_MATH_MATRIX4X4_EQUALS},
+    {"copy", (PyCFunction)matrix4x4_copy, METH_NOARGS,
+     DOC_MATH_MATRIX4X4_COPY},
+    {"__copy__", (PyCFunction)matrix4x4_copy, METH_NOARGS, NULL},
+    {NULL}};
+
+static PyGetSetDef matrix4x4_getsets[] = {
+    {"rows", (getter)matrix4x4_get_rows, NULL, DOC_MATH_MATRIX4X4_ROWS, NULL},
+    {"columns", (getter)matrix4x4_get_columns, NULL,
+     DOC_MATH_MATRIX4X4_COLUMNS, NULL},
+    {"trace", (getter)matrix4x4_get_trace, NULL, DOC_MATH_MATRIX4X4_TRACE,
+     NULL},
+    {"determinant", (getter)matrix4x4_get_determinant, NULL,
+     DOC_MATH_MATRIX4X4_DETERMINANT, NULL},
+    {NULL, 0, NULL, NULL, NULL}};
+
+static PyMemberDef matrix4x4_members[] = {
+    {"epsilon", T_DOUBLE, offsetof(pgMatrix4x4, epsilon), 0,
+     DOC_MATH_MATRIX4X4_EPSILON},
+    {NULL}};
+
+static PyTypeObject pgMatrix4x4_Type = {
+    PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.math.Matrix4x4",
+    .tp_basicsize = sizeof(pgMatrix4x4),
+    .tp_dealloc = (destructor)matrix4x4_dealloc,
+    .tp_repr = (reprfunc)matrix4x4_repr,
+    .tp_as_number = &matrix4x4_as_number,
+    .tp_as_mapping = &matrix4x4_as_mapping,
+    .tp_hash = PyObject_HashNotImplemented,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_doc = DOC_MATH_MATRIX4X4,
+    .tp_richcompare = (richcmpfunc)matrix4x4_richcompare,
+    .tp_iter = (getiterfunc)matrix4x4_iter,
+    .tp_methods = matrix4x4_methods,
+    .tp_members = matrix4x4_members,
+    .tp_getset = matrix4x4_getsets,
+    .tp_init = (initproc)matrix4x4_init,
+    .tp_new = (newfunc)matrix4x4_new,
+};
+
 static inline double
 lerp(double a, double b, double v)
 {
@@ -4890,8 +6393,16 @@ MODINIT_DEFINE(math)
     if ((PyModule_AddType(module, &pgVector2_Type) < 0) ||
         (PyModule_AddType(module, &pgVector3_Type) < 0) ||
         (PyModule_AddType(module, &pgVector4_Type) < 0) ||
+        (PyModule_AddType(module, &pgMatrix4x4_Type) < 0) ||
         (PyModule_AddType(module, &pgVectorElementwiseProxy_Type) < 0) ||
         (PyModule_AddType(module, &pgVectorIter_Type) < 0)) {
+        Py_DECREF(module);
+        return NULL;
+    }
+
+    /* The Matrix4x4 iterator is an internal helper type; ready it so it can be
+     * instantiated, but do not expose it as a module attribute. */
+    if (PyType_Ready(&pgMatrix4x4Iter_Type) < 0) {
         Py_DECREF(module);
         return NULL;
     }

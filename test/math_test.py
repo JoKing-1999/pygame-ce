@@ -4,7 +4,7 @@ import unittest
 from collections.abc import Collection, Sequence
 
 import pygame.math
-from pygame.math import Vector2, Vector3, Vector4
+from pygame.math import Matrix4x4, Vector2, Vector3, Vector4
 
 try:
     import numpy
@@ -3793,6 +3793,756 @@ class Vector4TypeTest(unittest.TestCase):
             "from_polar",
         ):
             self.assertFalse(hasattr(v, name), name)
+
+
+class Matrix4x4TypeTest(unittest.TestCase):
+    """Tests for pygame.math.Matrix4x4."""
+
+    IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+
+    def assertMatrixAlmostEqual(self, m, expected, places=9):
+        got = m.to_list()
+        self.assertEqual(len(got), 16)
+        for a, b in zip(got, expected):
+            self.assertAlmostEqual(a, b, places=places)
+
+    # ---------------- construction ----------------
+
+    def test_default_is_identity(self):
+        m = Matrix4x4()
+        self.assertTrue(m.is_identity())
+        self.assertEqual(m.to_list(), self.IDENTITY)
+
+    def test_construct_from_iterable(self):
+        vals = list(range(16))
+        m = Matrix4x4(vals)
+        self.assertEqual(m.to_list(), [float(v) for v in vals])
+        # also from a tuple
+        self.assertEqual(Matrix4x4(tuple(vals)).to_list(), [float(v) for v in vals])
+
+    def test_construct_from_16_scalars(self):
+        vals = list(range(16))
+        m = Matrix4x4(*vals)
+        self.assertEqual(m.to_list(), [float(v) for v in vals])
+
+    def test_copy_construction(self):
+        a = Matrix4x4().translate((1, 2, 3))
+        b = Matrix4x4(a)
+        self.assertEqual(a, b)
+        b[0, 3] = 99
+        self.assertNotEqual(a[0, 3], b[0, 3])  # independent copy
+
+    def test_construct_bad_length(self):
+        with self.assertRaises(ValueError):
+            Matrix4x4([1, 2, 3])
+        with self.assertRaises(ValueError):
+            Matrix4x4(list(range(17)))
+
+    def test_construct_rejects_kwargs(self):
+        with self.assertRaises(TypeError):
+            Matrix4x4(foo=1)
+
+    # ---------------- classmethod constructors ----------------
+
+    def test_identity_zero_diagonal(self):
+        self.assertEqual(Matrix4x4.identity().to_list(), self.IDENTITY)
+        self.assertEqual(Matrix4x4.zero().to_list(), [0.0] * 16)
+        d = Matrix4x4.diagonal(1, 2, 3, 4)
+        self.assertEqual(
+            d.to_list(),
+            [1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4],
+        )
+
+    def test_identity_returns_new_object(self):
+        a = Matrix4x4.identity()
+        b = Matrix4x4.identity()
+        self.assertIsNot(a, b)
+        a[0, 0] = 5
+        self.assertEqual(b[0, 0], 1)
+
+    def test_from_rows_and_columns(self):
+        rows = Matrix4x4.from_rows(
+            (1, 2, 3, 4), (5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16)
+        )
+        self.assertEqual(rows[0, 0], 1)
+        self.assertEqual(rows[1, 0], 5)
+        self.assertEqual(rows[0, 3], 4)
+        cols = Matrix4x4.from_columns(
+            (1, 2, 3, 4), (5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16)
+        )
+        # column 0 becomes the first column
+        self.assertEqual(cols[0, 0], 1)
+        self.assertEqual(cols[3, 0], 4)
+        self.assertEqual(cols[0, 1], 5)
+        # from_rows and from_columns are transposes of each other
+        self.assertEqual(rows.transpose(), cols)
+
+    def test_from_rows_accepts_vector4(self):
+        m = Matrix4x4.from_rows(
+            Vector4(1, 0, 0, 0),
+            Vector4(0, 1, 0, 0),
+            Vector4(0, 0, 1, 0),
+            Vector4(0, 0, 0, 1),
+        )
+        self.assertTrue(m.is_identity())
+
+    # ---------------- element access ----------------
+
+    def test_getitem_element_and_row(self):
+        m = Matrix4x4(list(range(16)))
+        self.assertEqual(m[0, 0], 0)
+        self.assertEqual(m[1, 2], 6)
+        self.assertEqual(m[3, 3], 15)
+        row = m[1]
+        self.assertIsInstance(row, Vector4)
+        self.assertEqual(row, Vector4(4, 5, 6, 7))
+
+    def test_getitem_negative_index(self):
+        m = Matrix4x4(list(range(16)))
+        self.assertEqual(m[-1, -1], 15)
+        self.assertEqual(m[-1], Vector4(12, 13, 14, 15))
+
+    def test_getitem_out_of_range(self):
+        m = Matrix4x4()
+        with self.assertRaises(IndexError):
+            m[4, 0]
+        with self.assertRaises(IndexError):
+            m[0, 4]
+        with self.assertRaises(IndexError):
+            m[4]
+
+    def test_setitem_element(self):
+        m = Matrix4x4()
+        m[0, 3] = 5.0
+        self.assertEqual(m[0, 3], 5.0)
+        with self.assertRaises(IndexError):
+            m[4, 0] = 1
+        # assigning to a whole row is not supported in V1
+        with self.assertRaises(TypeError):
+            m[0] = (1, 2, 3, 4)
+
+    # ---------------- sequence behavior ----------------
+
+    def test_len_and_iteration(self):
+        m = Matrix4x4(list(range(16)))
+        # NumPy-style: len is the row count, iteration yields Vector4 rows
+        self.assertEqual(len(m), 4)
+        rows = list(m)
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(isinstance(r, Vector4) for r in rows))
+        self.assertEqual(rows[0], Vector4(0, 1, 2, 3))
+        self.assertEqual(rows[3], Vector4(12, 13, 14, 15))
+        # the flat 16-element view is available via to_list()/to_tuple()
+        self.assertEqual(m.to_list(), [float(v) for v in range(16)])
+
+    def test_to_tuple_to_list(self):
+        m = Matrix4x4(list(range(16)))
+        self.assertEqual(m.to_tuple(), tuple(float(v) for v in range(16)))
+        self.assertEqual(m.to_list(), [float(v) for v in range(16)])
+        self.assertIsInstance(m.to_tuple(), tuple)
+        self.assertIsInstance(m.to_list(), list)
+
+    def test_repr(self):
+        r = repr(Matrix4x4())
+        self.assertTrue(r.startswith("Matrix4x4("))
+
+    # ---------------- equality / comparison ----------------
+
+    def test_equality_fuzzy(self):
+        a = Matrix4x4()
+        b = Matrix4x4()
+        self.assertTrue(a == b)
+        self.assertFalse(a != b)
+        b[0, 0] = 1 + 1e-9  # within default epsilon 1e-6
+        self.assertTrue(a == b)
+        b[0, 0] = 1 + 1e-3  # outside epsilon
+        self.assertTrue(a != b)
+
+    def test_equality_with_non_matrix(self):
+        m = Matrix4x4()
+        self.assertFalse(m == 5)
+        self.assertTrue(m != 5)
+
+    def test_equals_tolerance(self):
+        a = Matrix4x4()
+        b = Matrix4x4()
+        b[0, 0] = 1.05
+        self.assertFalse(a.equals(b))
+        self.assertTrue(a.equals(b, 0.1))
+        # accepts a raw 16-sequence
+        self.assertTrue(Matrix4x4().equals(self.IDENTITY))
+
+    def test_unhashable(self):
+        with self.assertRaises(TypeError):
+            hash(Matrix4x4())
+
+    def test_copy(self):
+        a = Matrix4x4().translate((1, 2, 3))
+        b = a.copy()
+        self.assertEqual(a, b)
+        self.assertIsNot(a, b)
+
+    # ---------------- properties ----------------
+
+    def test_properties(self):
+        m = Matrix4x4.diagonal(1, 2, 3, 4)
+        self.assertEqual(m.rows, 4)
+        self.assertEqual(m.columns, 4)
+        self.assertEqual(m.trace, 10.0)
+        self.assertAlmostEqual(m.determinant, 24.0)
+        self.assertAlmostEqual(Matrix4x4().determinant, 1.0)
+        self.assertAlmostEqual(Matrix4x4.zero().determinant, 0.0)
+
+    # ---------------- arithmetic ----------------
+
+    def test_add_sub_neg(self):
+        a = Matrix4x4(list(range(16)))
+        b = Matrix4x4([1] * 16)
+        self.assertEqual((a + b).to_list(), [v + 1 for v in range(16)])
+        self.assertEqual((a - b).to_list(), [v - 1 for v in range(16)])
+        self.assertEqual((-a).to_list(), [-v for v in range(16)])
+
+    def test_scalar_mul_div(self):
+        a = Matrix4x4(list(range(16)))
+        self.assertEqual((a * 2).to_list(), [v * 2 for v in range(16)])
+        self.assertEqual((2 * a).to_list(), [v * 2 for v in range(16)])
+        self.assertEqual((a / 2).to_list(), [v / 2 for v in range(16)])
+
+    def test_div_by_zero(self):
+        with self.assertRaises(ZeroDivisionError):
+            Matrix4x4() / 0
+
+    def test_star_is_not_matmul(self):
+        # matrix * matrix must not be matrix multiplication
+        with self.assertRaises(TypeError):
+            Matrix4x4() * Matrix4x4()
+
+    # ---------------- matrix multiplication ----------------
+
+    def test_matmul_identity(self):
+        a = Matrix4x4(list(range(16)))
+        self.assertEqual(a @ Matrix4x4(), a)
+        self.assertEqual(Matrix4x4() @ a, a)
+
+    def test_matmul_associativity(self):
+        a = Matrix4x4().translate((1, 2, 3))
+        b = Matrix4x4().scale((2, 3, 4))
+        c = Matrix4x4().rotate((0, 0, 1), 30)
+        left = (a @ b) @ c
+        right = a @ (b @ c)
+        self.assertTrue(left.equals(right, 1e-9))
+
+    def test_matmul_vector4_raw(self):
+        # no perspective divide for Vector4
+        m = Matrix4x4().scale(2)
+        self.assertEqual(m @ Vector4(1, 2, 3, 4), Vector4(2, 4, 6, 4))
+
+    def test_matmul_vector3_is_point(self):
+        m = Matrix4x4().translate((10, 20, 30))
+        r = m @ Vector3(1, 1, 1)
+        self.assertIsInstance(r, Vector3)
+        self.assertEqual(r, Vector3(11, 21, 31))
+
+    def test_matmul_vector3_perspective_divide(self):
+        p = Matrix4x4.perspective(90, 1.0, 1.0, 100.0)
+        # a point in front should divide by w
+        v4 = p @ Vector4(2, 0, 4, 1)
+        v3 = p @ Vector3(2, 0, 4)
+        self.assertAlmostEqual(v3.x, v4.x / v4.w)
+        self.assertAlmostEqual(v3.y, v4.y / v4.w)
+        self.assertAlmostEqual(v3.z, v4.z / v4.w)
+
+    def test_matmul_vector3_zero_w_raises(self):
+        # a matrix whose bottom row projects to w = 0
+        m = Matrix4x4(self.IDENTITY)
+        m[3, 3] = 0.0
+        with self.assertRaises(ValueError):
+            m @ Vector3(0, 0, 0)
+
+    # ---------------- geometric transforms ----------------
+
+    def test_transform_point_vs_direction(self):
+        m = Matrix4x4().translate((10, 20, 30))
+        self.assertEqual(m.transform_point(Vector3(0, 0, 0)), Vector3(10, 20, 30))
+        # direction ignores translation
+        self.assertEqual(m.transform_direction(Vector3(1, 0, 0)), Vector3(1, 0, 0))
+
+    # ---------------- transpose / invert ----------------
+
+    def test_transpose(self):
+        a = Matrix4x4(list(range(16)))
+        t = a.transpose()
+        for r in range(4):
+            for c in range(4):
+                self.assertEqual(a[r, c], t[c, r])
+        # non-mutating
+        self.assertEqual(a[0, 1], 1)
+
+    def test_transpose_ip(self):
+        a = Matrix4x4(list(range(16)))
+        expected = a.transpose()
+        self.assertIsNone(a.transpose_ip())
+        self.assertEqual(a, expected)
+
+    def test_invert(self):
+        a = (
+            Matrix4x4().translate((1, 2, 3))
+            @ Matrix4x4().rotate((0, 1, 0), 40)
+            @ Matrix4x4().scale((2, 3, 4))
+        )
+        inv = a.invert()
+        self.assertTrue((a @ inv).is_identity(1e-9))
+        self.assertTrue((inv @ a).is_identity(1e-9))
+        # non-mutating
+        self.assertFalse(a.is_identity())
+
+    def test_invert_ip(self):
+        a = Matrix4x4().translate((5, 6, 7))
+        original = a.copy()
+        self.assertIsNone(a.invert_ip())
+        self.assertTrue((a @ original).is_identity(1e-9))
+
+    def test_invert_singular_raises(self):
+        with self.assertRaises(ValueError):
+            Matrix4x4.zero().invert()
+        with self.assertRaises(ValueError):
+            Matrix4x4.zero().invert_ip()
+
+    # ---------------- predicates ----------------
+
+    def test_is_identity(self):
+        self.assertTrue(Matrix4x4().is_identity())
+        self.assertFalse(Matrix4x4().translate((1, 0, 0)).is_identity())
+
+    def test_is_affine(self):
+        self.assertTrue(Matrix4x4().translate((1, 2, 3)).is_affine())
+        self.assertFalse(Matrix4x4.perspective(90, 1, 1, 10).is_affine())
+
+    def test_is_orthogonal(self):
+        self.assertTrue(Matrix4x4().rotate((0, 1, 0), 33).is_orthogonal(1e-9))
+        self.assertFalse(Matrix4x4().scale((2, 2, 2)).is_orthogonal(1e-9))
+
+    # ---------------- golden / convention tests ----------------
+
+    def test_golden_translation_placement(self):
+        m = Matrix4x4().translate((10, 20, 30))
+        self.assertEqual(m[0, 3], 10)
+        self.assertEqual(m[1, 3], 20)
+        self.assertEqual(m[2, 3], 30)
+        self.assertEqual(m.get_translation(), Vector3(10, 20, 30))
+
+    def test_golden_rotation_z(self):
+        # LH, positive angle = clockwise viewed from +axis toward origin
+        m = Matrix4x4().rotate((0, 0, 1), 90)
+        self.assertMatrixAlmostEqual(
+            m, [0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        )
+        p = m.transform_point((1, 0, 0))
+        self.assertAlmostEqual(p.x, 0)
+        self.assertAlmostEqual(p.y, -1)
+        self.assertAlmostEqual(p.z, 0)
+
+    def test_golden_rotation_x(self):
+        m = Matrix4x4().rotate((1, 0, 0), 90)
+        self.assertMatrixAlmostEqual(
+            m, [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1]
+        )
+
+    def test_golden_rotation_y(self):
+        m = Matrix4x4().rotate((0, 1, 0), 90)
+        self.assertMatrixAlmostEqual(
+            m, [0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]
+        )
+
+    def test_axis_normalized_internally(self):
+        # a non-unit axis must give the same result as its normalized form
+        a = Matrix4x4().rotate((0, 0, 5), 37)
+        b = Matrix4x4().rotate((0, 0, 1), 37)
+        self.assertTrue(a.equals(b, 1e-9))
+
+    def test_rotation_preserves_length(self):
+        m = Matrix4x4().rotate((1, 2, 3), 57)
+        v = m.transform_direction(Vector3(1, 0, 0))
+        self.assertAlmostEqual(v.length(), 1.0)
+
+    def test_golden_perspective(self):
+        fov, aspect, near, far = 90.0, 2.0, 1.0, 100.0
+        f = 1.0 / math.tan(math.radians(fov) / 2.0)
+        expected = [
+            f / aspect,
+            0,
+            0,
+            0,
+            0,
+            f,
+            0,
+            0,
+            0,
+            0,
+            far / (far - near),
+            -near * far / (far - near),
+            0,
+            0,
+            1,
+            0,
+        ]
+        self.assertMatrixAlmostEqual(
+            Matrix4x4.perspective(fov, aspect, near, far), expected
+        )
+
+    def test_perspective_depth_range(self):
+        p = Matrix4x4.perspective(60, 1.5, 0.5, 50.0)
+        near = p @ Vector4(0, 0, 0.5, 1)
+        far = p @ Vector4(0, 0, 50.0, 1)
+        self.assertAlmostEqual(near.z / near.w, 0.0)
+        self.assertAlmostEqual(far.z / far.w, 1.0)
+
+    def test_golden_orthographic(self):
+        l, r, b, t, near, far = -2.0, 2.0, -1.0, 1.0, 1.0, 100.0
+        expected = [
+            2 / (r - l),
+            0,
+            0,
+            -(r + l) / (r - l),
+            0,
+            2 / (t - b),
+            0,
+            -(t + b) / (t - b),
+            0,
+            0,
+            1 / (far - near),
+            -near / (far - near),
+            0,
+            0,
+            0,
+            1,
+        ]
+        self.assertMatrixAlmostEqual(
+            Matrix4x4.orthographic(l, r, b, t, near, far), expected
+        )
+
+    def test_orthographic_depth_range(self):
+        o = Matrix4x4.orthographic(-1, 1, -1, 1, 2.0, 20.0)
+        self.assertAlmostEqual((o @ Vector4(0, 0, 2.0, 1)).z, 0.0)
+        self.assertAlmostEqual((o @ Vector4(0, 0, 20.0, 1)).z, 1.0)
+
+    def test_golden_look_at_identity(self):
+        # looking down +Z from the origin with +Y up is the identity
+        m = Matrix4x4.look_at((0, 0, 0), (0, 0, 1), (0, 1, 0))
+        self.assertTrue(m.is_identity(1e-9))
+
+    def test_look_at_maps_eye_to_origin(self):
+        eye = Vector3(0, 0, -5)
+        m = Matrix4x4.look_at(eye, (0, 0, 0), (0, 1, 0))
+        p = m.transform_point(eye)
+        self.assertTrue(p.length() < 1e-9)
+
+    def test_look_at_degenerate(self):
+        with self.assertRaises(ValueError):
+            Matrix4x4.look_at((0, 0, 0), (0, 0, 0), (0, 1, 0))
+        with self.assertRaises(ValueError):
+            # up parallel to view direction
+            Matrix4x4.look_at((0, 0, 0), (0, 1, 0), (0, 1, 0))
+
+    # ---------------- row/column independence ----------------
+
+    def test_get_row_column_are_vector4(self):
+        m = Matrix4x4(list(range(16)))
+        self.assertIsInstance(m.get_row(0), Vector4)
+        self.assertIsInstance(m.get_column(0), Vector4)
+        self.assertEqual(m.get_row(1), Vector4(4, 5, 6, 7))
+        self.assertEqual(m.get_column(1), Vector4(1, 5, 9, 13))
+
+    def test_get_row_independent_copy(self):
+        m = Matrix4x4(list(range(16)))
+        row = m.get_row(0)
+        row.x = 999
+        self.assertEqual(m[0, 0], 0)  # source unchanged
+
+    def test_get_column_independent_copy(self):
+        m = Matrix4x4(list(range(16)))
+        col = m.get_column(0)
+        col.y = 999
+        self.assertEqual(m[1, 0], 4)  # source unchanged
+
+    # ---------------- epsilon boundary + preservation ----------------
+
+    def test_equality_boundary_matches_equals(self):
+        # == and equals() must use the same inclusive (<=) rule at the boundary
+        a = Matrix4x4()
+        b = Matrix4x4()
+        b[0, 0] = 1.0 + 1e-6  # exactly epsilon away
+        self.assertEqual(a == b, a.equals(b))
+        self.assertTrue(a == b)  # inclusive: equal at exactly epsilon
+        self.assertTrue(a.equals(b))
+        b[0, 0] = 1.0 + 1e-6 + 1e-9  # just beyond epsilon
+        self.assertFalse(a == b)
+        self.assertFalse(a.equals(b))
+
+    def test_equals_tolerance_boundary(self):
+        a = Matrix4x4()
+        b = Matrix4x4()
+        b[0, 0] = 1.5
+        self.assertTrue(a.equals(b, 0.5))  # exactly tolerance -> equal
+        self.assertFalse(a.equals(b, 0.5 - 1e-9))
+
+    def test_epsilon_preserved_across_operations(self):
+        m = Matrix4x4().translate((1, 2, 3))
+        m.epsilon = 1e-3
+        n = Matrix4x4().scale(2)
+        n.epsilon = 1e-3
+        for result in (
+            m.transpose(),
+            m.invert(),
+            -m,
+            m + n,
+            m - n,
+            m * 2.0,
+            m / 2.0,
+            m @ n,
+            m.copy(),
+            Matrix4x4(m),
+        ):
+            self.assertEqual(result.epsilon, 1e-3)
+
+    def test_epsilon_ip_preserved(self):
+        m = Matrix4x4().translate((1, 2, 3))
+        m.epsilon = 1e-3
+        m.transpose_ip()
+        self.assertEqual(m.epsilon, 1e-3)
+        m.invert_ip()
+        self.assertEqual(m.epsilon, 1e-3)
+
+    def test_classmethod_constructors_use_default_epsilon(self):
+        # freshly-constructed matrices (no source) get the default epsilon
+        self.assertEqual(Matrix4x4().epsilon, 1e-6)
+        self.assertEqual(Matrix4x4().translate((1, 2, 3)).epsilon, 1e-6)
+
+    # ---------------- NaN safety ----------------
+
+    def test_predicates_nan_safe(self):
+        nan = float("nan")
+        m = Matrix4x4()
+        m[0, 0] = nan
+        self.assertFalse(m.is_identity())
+        m2 = Matrix4x4().translate((1, 2, 3))
+        m2[3, 0] = nan
+        self.assertFalse(m2.is_affine())
+        r = Matrix4x4().rotate((0, 1, 0), 30)
+        r[0, 0] = nan
+        self.assertFalse(r.is_orthogonal())
+
+    def test_equality_nan(self):
+        nan = float("nan")
+        a = Matrix4x4()
+        b = Matrix4x4()
+        b[0, 0] = nan
+        self.assertFalse(a == b)
+        self.assertTrue(a != b)
+
+    # ---------------- inverse numerical edge cases ----------------
+
+    def test_invert_small_scale(self):
+        # det = (1e-8)**3 = 1e-24, non-zero -> must remain invertible
+        m = Matrix4x4().scale(1e-8)
+        inv = m.invert()
+        self.assertTrue((m @ inv).is_identity(1e-6))
+        self.assertAlmostEqual(inv[0, 0], 1e8)
+
+    def test_invert_large_scale(self):
+        m = Matrix4x4().scale(1e8)
+        inv = m.invert()
+        self.assertTrue((m @ inv).is_identity(1e-6))
+
+    def test_invert_zero_scale_singular(self):
+        # a zero scale on any axis is genuinely singular
+        with self.assertRaises(ValueError):
+            Matrix4x4().scale((0, 1, 1)).invert()
+
+    # ---------------- projection domain validation ----------------
+
+    def test_perspective_validation(self):
+        # valid
+        Matrix4x4.perspective(60, 1.5, 0.1, 100)
+        for bad in (
+            (0, 1, 1, 10),  # fov = 0
+            (180, 1, 1, 10),  # fov = 180
+            (-10, 1, 1, 10),  # fov < 0
+            (60, 0, 1, 10),  # aspect = 0
+            (60, -1, 1, 10),  # aspect < 0
+            (60, 1, 0, 10),  # near = 0
+            (60, 1, -1, 10),  # near < 0
+            (60, 1, 10, 10),  # far == near
+            (60, 1, 10, 5),  # far < near
+        ):
+            with self.assertRaises(ValueError):
+                Matrix4x4.perspective(*bad)
+
+    def test_orthographic_validation(self):
+        Matrix4x4.orthographic(-1, 1, -1, 1, 1, 10)
+        for bad in (
+            (1, 1, -1, 1, 1, 10),  # left == right
+            (-1, 1, 1, 1, 1, 10),  # bottom == top
+            (-1, 1, -1, 1, 10, 10),  # far == near
+            (-1, 1, -1, 1, 10, 5),  # far < near
+        ):
+            with self.assertRaises(ValueError):
+                Matrix4x4.orthographic(*bad)
+
+    # ---------------- transform_direction under rotation + scale ----------
+
+    def test_transform_direction_rotation_scale(self):
+        m = (
+            Matrix4x4().translate((100, 200, 300))
+            @ Matrix4x4().rotate((0, 0, 1), 90)
+            @ Matrix4x4().scale((2, 2, 2))
+        )
+        d = m.transform_direction(Vector3(1, 0, 0))
+        # translation ignored; +X rotated to -Y then scaled by 2 -> (0, -2, 0)
+        self.assertAlmostEqual(d.x, 0)
+        self.assertAlmostEqual(d.y, -2)
+        self.assertAlmostEqual(d.z, 0)
+
+    # ---------------- iterator is independent of the source ----------------
+
+    def test_iter_yields_rows(self):
+        m = Matrix4x4(list(range(16)))
+        it = iter(m)
+        self.assertEqual(next(it), Vector4(0, 1, 2, 3))
+        self.assertEqual(
+            list(it),
+            [Vector4(4, 5, 6, 7), Vector4(8, 9, 10, 11), Vector4(12, 13, 14, 15)],
+        )
+
+    def test_iter_rows_are_independent_copies(self):
+        m = Matrix4x4(list(range(16)))
+        row = next(iter(m))
+        row.x = 999
+        self.assertEqual(m[0, 0], 0)
+
+    # ---------------- instance transform ops (post-multiply, local frame) ---
+
+    def test_translate_matches_composition(self):
+        m = Matrix4x4().rotate((0, 0, 1), 30)
+        self.assertTrue(
+            m.translate((1, 2, 3)).equals(m @ Matrix4x4().translate((1, 2, 3)), 1e-9)
+        )
+
+    def test_translate_ip(self):
+        m = Matrix4x4().rotate((0, 1, 0), 45)
+        expected = m @ Matrix4x4().translate((1, 2, 3))
+        self.assertIsNone(m.translate_ip((1, 2, 3)))
+        self.assertTrue(m.equals(expected, 1e-9))
+
+    def test_rotate_matches_composition(self):
+        m = Matrix4x4().translate((5, 6, 7))
+        self.assertTrue(
+            m.rotate((0, 1, 0), 40).equals(m @ Matrix4x4().rotate((0, 1, 0), 40), 1e-9)
+        )
+
+    def test_rotate_ip(self):
+        m = Matrix4x4().translate((5, 6, 7))
+        expected = m @ Matrix4x4().rotate((0, 0, 1), 90)
+        self.assertIsNone(m.rotate_ip((0, 0, 1), 90))
+        self.assertTrue(m.equals(expected, 1e-9))
+
+    def test_scale_matches_composition(self):
+        m = Matrix4x4().translate((1, 2, 3))
+        self.assertTrue(
+            m.scale((2, 3, 4)).equals(m @ Matrix4x4().scale((2, 3, 4)), 1e-9)
+        )
+        self.assertTrue(m.scale(2).equals(m @ Matrix4x4().scale(2), 1e-9))
+
+    def test_scale_ip(self):
+        m = Matrix4x4().translate((1, 2, 3))
+        expected = m @ Matrix4x4().scale(2)
+        self.assertIsNone(m.scale_ip(2))
+        self.assertTrue(m.equals(expected, 1e-9))
+
+    def test_instance_ops_local_frame_post_multiply(self):
+        # translate then rotate about origin: post-multiply keeps translation,
+        # then rotates the local axes. Verify against explicit composition.
+        base = Matrix4x4().translate((10, 0, 0))
+        got = base.rotate((0, 0, 1), 90).transform_point((1, 0, 0))
+        exp = (base @ Matrix4x4().rotate((0, 0, 1), 90)).transform_point((1, 0, 0))
+        self.assertEqual(got, exp)
+
+    def test_instance_ops_preserve_epsilon(self):
+        m = Matrix4x4().translate((1, 2, 3))
+        m.epsilon = 1e-3
+        for result in (
+            m.translate((1, 1, 1)),
+            m.rotate((0, 1, 0), 10),
+            m.scale(2),
+        ):
+            self.assertEqual(result.epsilon, 1e-3)
+
+    def test_instance_ops_ip_preserve_epsilon(self):
+        m = Matrix4x4().translate((1, 2, 3))
+        m.epsilon = 1e-3
+        m.translate_ip((1, 1, 1))
+        m.rotate_ip((0, 1, 0), 10)
+        m.scale_ip(2)
+        self.assertEqual(m.epsilon, 1e-3)
+
+    def test_instance_ops_errors(self):
+        m = Matrix4x4()
+        with self.assertRaises(ValueError):
+            m.rotate((0, 0, 0), 30)  # zero axis
+        with self.assertRaises(ValueError):
+            m.rotate_ip((0, 0, 0), 30)
+        with self.assertRaises(TypeError):
+            m.translate((1, 2))  # wrong length
+        with self.assertRaises(TypeError):
+            m.scale("nope")
+
+    # ---------------- transform constructors (noun forms) ----------------
+
+    def test_translation_constructor(self):
+        m = Matrix4x4.translation((10, 20, 30))
+        self.assertEqual((m[0, 3], m[1, 3], m[2, 3]), (10, 20, 30))
+        # equivalent to identity + translate op
+        self.assertTrue(m.equals(Matrix4x4().translate((10, 20, 30)), 1e-9))
+
+    def test_rotation_axis_angle_constructor(self):
+        m = Matrix4x4.rotation_axis_angle((0, 0, 1), 90)
+        self.assertMatrixAlmostEqual(
+            m, [0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        )
+        self.assertTrue(m.equals(Matrix4x4().rotate((0, 0, 1), 90), 1e-9))
+        with self.assertRaises(ValueError):
+            Matrix4x4.rotation_axis_angle((0, 0, 0), 30)
+
+    def test_scaling_constructor(self):
+        self.assertEqual([Matrix4x4.scaling(2)[i, i] for i in range(4)], [2, 2, 2, 1])
+        m = Matrix4x4.scaling((2, 3, 4))
+        self.assertEqual([m[i, i] for i in range(4)], [2, 3, 4, 1])
+        self.assertTrue(m.equals(Matrix4x4().scale((2, 3, 4)), 1e-9))
+
+    def test_constructors_default_epsilon(self):
+        self.assertEqual(Matrix4x4.translation((1, 2, 3)).epsilon, 1e-6)
+        self.assertEqual(Matrix4x4.scaling(2).epsilon, 1e-6)
+        self.assertEqual(Matrix4x4.rotation_axis_angle((0, 1, 0), 10).epsilon, 1e-6)
+
+    def test_scale_op_and_scaling_constructor_coexist(self):
+        # instance op is scale/scale_ip; constructor is scaling
+        self.assertTrue(hasattr(Matrix4x4, "scaling"))
+        m = Matrix4x4.translation((1, 2, 3))
+        self.assertTrue(m.scale(2).equals(m @ Matrix4x4.scaling(2), 1e-9))
+
+    def test_eq_with_bad_len_object_is_clean(self):
+        # comparing against an object whose __len__ raises must not leak the
+        # exception (regression: pending-exception in coords parser).
+        class BadLen:
+            def __len__(self):
+                raise RuntimeError("boom")
+
+            def __getitem__(self, i):
+                return 0.0
+
+        m = Matrix4x4()
+        self.assertFalse(m == BadLen())
+        self.assertTrue(m != BadLen())
 
 
 if __name__ == "__main__":

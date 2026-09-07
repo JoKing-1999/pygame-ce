@@ -160,6 +160,7 @@ import pygame.math
 Vector2 = pygame.math.Vector2
 Vector3 = pygame.math.Vector3
 Vector4 = pygame.math.Vector4
+Matrix4x4 = pygame.math.Matrix4x4
 
 
 from pygame.base import __version__

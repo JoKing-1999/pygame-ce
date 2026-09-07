@@ -1450,4 +1450,463 @@
 
    .. ## pygame.math.Vector4 ##
 
+.. class:: Matrix4x4
+
+   | :sl:`a 4x4 matrix for 3D transformations and general linear algebra`
+   | :sg:`Matrix4x4() -> Matrix4x4`
+   | :sg:`Matrix4x4(Matrix4x4) -> Matrix4x4`
+   | :sg:`Matrix4x4(sequence_of_16_numbers) -> Matrix4x4`
+   | :sg:`Matrix4x4(m00, m01, ..., m33) -> Matrix4x4`
+
+   ``Matrix4x4`` is a general-purpose 4x4 matrix of double-precision floats. It
+   is useful for homogeneous-coordinate mathematics, 3D model/view/projection
+   transformations and camera mathematics, and it is a natural Python
+   representation of a shader ``float4x4`` value. It is a pure mathematical
+   type and has no dependency on the GPU subsystem.
+
+   **Conventions.** The class uses a single, explicit convention throughout:
+
+   * **Column vectors:** a vector is transformed with ``result = matrix @ vector``,
+     and matrices compose as ``mvp = projection @ view @ model``.
+   * **Indexing:** ``m[row, column]`` with both indices in ``0..3``. An affine
+     transform stores its translation in ``m[0, 3]``, ``m[1, 3]``, ``m[2, 3]``
+     and has ``0, 0, 0, 1`` as its final row.
+   * **Storage order:** logically row-major. :meth:`to_tuple`, :meth:`to_list`
+     and the sequence constructor use the flat order
+     ``m00, m01, m02, m03, m10, ... m33``. Iteration, however, is row-oriented
+     (see **Sequence semantics** below).
+   * **Angles** are given in **degrees**.
+   * **Coordinate system:** left-handed, with camera forward ``+Z`` and a
+     clip-space depth range of ``z`` in ``[0, 1]`` (``near`` maps to ``0``,
+     ``far`` maps to ``1``). This matches the SDL_GPU convention rather than
+     OpenGL's ``[-1, 1]`` depth.
+
+   Constructing with no arguments returns the identity matrix. A single
+   argument may be another ``Matrix4x4`` (copied) or an iterable of exactly 16
+   numbers; alternatively 16 numeric arguments may be given directly.
+
+   Equality is fuzzy: two matrices compare equal when every element differs by
+   no more than :attr:`epsilon`. The ``equals`` method uses the same inclusive
+   ``<=`` rule. ``Matrix4x4`` is unhashable and mutable.
+
+   **Sequence semantics.** ``Matrix4x4`` follows a row-oriented model similar to
+   a 2-D NumPy array of shape ``(4, 4)``. ``len(m)`` is ``4`` (the number of
+   rows), and iterating a matrix yields its 4 rows as independent
+   :class:`Vector4` instances (so ``list(m)`` gives four ``Vector4`` rows).
+   Integer indexing is likewise a row accessor: ``m[i]`` returns row ``i`` as a
+   :class:`Vector4` for ``i`` in ``0..3`` (negative indices count from the
+   end), while element access uses the two-index form ``m[row, column]``. For
+   the flat 16-element view (row-major), use :meth:`to_tuple` or
+   :meth:`to_list`.
+
+   .. note::
+      ``numpy.array(matrix)`` does **not** automatically produce a ``(4, 4)``
+      array, because ``Matrix4x4`` uses mapping-style ``m[row, column]``
+      indexing rather than the flat sequence protocol. To get a NumPy array,
+      convert explicitly, e.g. ``numpy.array(m.to_list()).reshape(4, 4)`` or
+      ``numpy.array([list(row) for row in m])``.
+
+   This type requires :class:`Vector3` and :class:`Vector4`.
+
+   .. versionadded:: 3.0.0
+
+   .. classmethod:: identity
+
+      | :sl:`returns a new identity matrix.`
+      | :sg:`identity() -> Matrix4x4`
+
+      Returns a new, independent identity matrix.
+
+      .. ## Matrix4x4.identity ##
+
+   .. classmethod:: zero
+
+      | :sl:`returns a new matrix filled with zeros.`
+      | :sg:`zero() -> Matrix4x4`
+
+      .. ## Matrix4x4.zero ##
+
+   .. classmethod:: diagonal
+
+      | :sl:`returns a new diagonal matrix.`
+      | :sg:`diagonal(x, y, z, w) -> Matrix4x4`
+
+      Returns a matrix whose main diagonal is ``(x, y, z, w)`` and whose other
+      elements are zero.
+
+      .. ## Matrix4x4.diagonal ##
+
+   .. classmethod:: from_rows
+
+      | :sl:`builds a matrix from its four rows.`
+      | :sg:`from_rows(row0, row1, row2, row3) -> Matrix4x4`
+
+      Each argument must be a :class:`Vector4` or a sequence of four numbers,
+      supplying one row of the matrix.
+
+      .. ## Matrix4x4.from_rows ##
+
+   .. classmethod:: from_columns
+
+      | :sl:`builds a matrix from its four columns.`
+      | :sg:`from_columns(column0, column1, column2, column3) -> Matrix4x4`
+
+      Each argument must be a :class:`Vector4` or a sequence of four numbers,
+      supplying one column of the matrix.
+
+      .. ## Matrix4x4.from_columns ##
+
+   .. classmethod:: translation
+
+      | :sl:`builds a translation matrix.`
+      | :sg:`translation(offset) -> Matrix4x4`
+
+      Returns an affine translation matrix for the given ``offset``
+      (a :class:`Vector3` or a sequence of three numbers), with the offset in
+      ``m[0, 3]``, ``m[1, 3]``, ``m[2, 3]``. This is the noun counterpart of the
+      :meth:`translate` operation; ``Matrix4x4.translation(v)`` equals
+      ``Matrix4x4().translate(v)`` but avoids building an intermediate identity.
+
+      .. ## Matrix4x4.translation ##
+
+   .. classmethod:: rotation_axis_angle
+
+      | :sl:`builds a rotation matrix about an arbitrary axis.`
+      | :sg:`rotation_axis_angle(axis, angle) -> Matrix4x4`
+
+      Returns a rotation matrix about ``axis`` (a :class:`Vector3` or a
+      sequence of three numbers, normalized internally) by ``angle`` degrees.
+      In this left-handed convention a positive angle is a **clockwise**
+      rotation when viewed from the ``+axis`` looking toward the origin. A
+      zero-length axis raises a ``ValueError``. Noun counterpart of
+      :meth:`rotate`.
+
+      .. ## Matrix4x4.rotation_axis_angle ##
+
+   .. classmethod:: scaling
+
+      | :sl:`builds a scale matrix.`
+      | :sg:`scaling(scalar) -> Matrix4x4`
+      | :sg:`scaling(vector3) -> Matrix4x4`
+
+      Returns a scale matrix. A single number produces a uniform scale; a
+      :class:`Vector3` or a sequence of three numbers produces a non-uniform
+      scale along the ``x``, ``y`` and ``z`` axes. Named ``scaling`` (not
+      ``scale``) so it doesn't collide with the :meth:`scale` operation. Noun
+      counterpart of :meth:`scale`.
+
+      .. ## Matrix4x4.scaling ##
+
+   .. classmethod:: look_at
+
+      | :sl:`builds a world-to-view (camera) matrix.`
+      | :sg:`look_at(eye, target, up) -> Matrix4x4`
+
+      Returns a left-handed world-to-view matrix that places a camera at
+      ``eye`` looking toward ``target`` with the given ``up`` direction. The
+      basis is ``forward = normalize(target - eye)``,
+      ``right = normalize(cross(up, forward))`` and
+      ``up' = cross(forward, right)``. A ``ValueError`` is raised if ``eye``
+      equals ``target`` or if ``up`` is parallel to the view direction. All
+      arguments are :class:`Vector3` or sequences of three numbers.
+
+      .. ## Matrix4x4.look_at ##
+
+   .. classmethod:: perspective
+
+      | :sl:`builds a perspective projection matrix.`
+      | :sg:`perspective(fov, aspect, near, far) -> Matrix4x4`
+
+      Returns a left-handed perspective projection matrix. ``fov`` is the
+      **vertical** field of view in **degrees**, ``aspect`` is the width divided
+      by the height of the viewport, and ``near``/``far`` are the clip-plane
+      distances. The resulting clip-space depth range is ``z`` in ``[0, 1]``
+      (``near`` maps to ``0``, ``far`` maps to ``1``).
+
+      Domain constraints (each raises ``ValueError`` if violated): ``fov`` must
+      be in the open interval ``(0, 180)`` degrees, ``aspect`` must be
+      positive, ``near`` must be positive, and ``far`` must be greater than
+      ``near``.
+
+      .. ## Matrix4x4.perspective ##
+
+   .. classmethod:: orthographic
+
+      | :sl:`builds an orthographic projection matrix.`
+      | :sg:`orthographic(left, right, bottom, top, near, far) -> Matrix4x4`
+
+      Returns a left-handed orthographic projection matrix. The depth
+      convention matches :meth:`perspective`: ``z`` in ``[0, 1]`` with ``near``
+      mapping to ``0`` and ``far`` mapping to ``1``.
+
+      Domain constraints (each raises ``ValueError`` if violated): ``left`` and
+      ``right`` must differ, ``bottom`` and ``top`` must differ, and ``far``
+      must be greater than ``near``.
+
+      .. ## Matrix4x4.orthographic ##
+
+   .. attribute:: rows
+
+      | :sl:`the number of rows (always 4).`
+
+      .. ## Matrix4x4.rows ##
+
+   .. attribute:: columns
+
+      | :sl:`the number of columns (always 4).`
+
+      .. ## Matrix4x4.columns ##
+
+   .. attribute:: trace
+
+      | :sl:`the sum of the diagonal elements.`
+
+      Equal to ``m[0,0] + m[1,1] + m[2,2] + m[3,3]``.
+
+      .. ## Matrix4x4.trace ##
+
+   .. attribute:: determinant
+
+      | :sl:`the determinant of the matrix.`
+
+      .. ## Matrix4x4.determinant ##
+
+   .. attribute:: epsilon
+
+      | :sl:`the tolerance used for equality comparisons.`
+
+      Two matrices are considered equal when every corresponding element
+      differs by no more than this value (inclusive). Defaults to ``1e-6``.
+
+      .. ## Matrix4x4.epsilon ##
+
+   .. method:: is_identity
+
+      | :sl:`tests whether the matrix is approximately the identity.`
+      | :sg:`is_identity(tolerance=...) -> bool`
+
+      .. ## Matrix4x4.is_identity ##
+
+   .. method:: is_affine
+
+      | :sl:`tests whether the matrix is an affine transform.`
+      | :sg:`is_affine(tolerance=...) -> bool`
+
+      Returns ``True`` when the final row is approximately ``0, 0, 0, 1``.
+
+      .. ## Matrix4x4.is_affine ##
+
+   .. method:: is_orthogonal
+
+      | :sl:`tests whether the matrix is orthogonal.`
+      | :sg:`is_orthogonal(tolerance=...) -> bool`
+
+      Returns ``True`` when ``Mᵀ M`` is approximately the identity, i.e. the
+      columns are orthonormal. Note that an orthogonal matrix may represent a
+      rotation *or* a reflection (or a combination), so this is not by itself a
+      test for a pure rotation. Matrices containing ``NaN`` are never
+      orthogonal.
+
+      .. ## Matrix4x4.is_orthogonal ##
+
+   .. method:: transform_point
+
+      | :sl:`transforms a point, applying translation and perspective divide.`
+      | :sg:`transform_point(point) -> Vector3`
+
+      Treats ``point`` as the homogeneous point ``(x, y, z, 1)``, multiplies it
+      by the matrix and divides the result by the resulting ``w`` component,
+      returning a :class:`Vector3`. This is identical to ``matrix @ vector3``.
+      A resulting ``w`` of zero raises a ``ValueError``.
+
+      .. ## Matrix4x4.transform_point ##
+
+   .. method:: transform_direction
+
+      | :sl:`transforms a direction, ignoring translation.`
+      | :sg:`transform_direction(direction) -> Vector3`
+
+      Treats ``direction`` as ``(x, y, z, 0)``, multiplies it by the matrix and
+      returns a :class:`Vector3` without performing a perspective divide.
+      Translation therefore does not affect the result.
+
+      .. ## Matrix4x4.transform_direction ##
+
+   .. method:: translate
+
+      | :sl:`returns a new matrix with a translation applied (local frame).`
+      | :sg:`translate(offset) -> Matrix4x4`
+
+      Returns a new matrix equal to ``self`` post-multiplied by a translation of
+      ``offset`` (a :class:`Vector3` or a sequence of three numbers); ``self``
+      is not modified. Post-multiplication means the translation is applied in
+      the matrix's own (local) frame. Build a standalone translation with
+      ``Matrix4x4().translate(offset)``.
+
+      .. ## Matrix4x4.translate ##
+
+   .. method:: translate_ip
+
+      | :sl:`applies a translation in place (local frame).`
+      | :sg:`translate_ip(offset) -> None`
+
+      In-place form of :meth:`translate`; mutates ``self`` and returns ``None``.
+
+      .. ## Matrix4x4.translate_ip ##
+
+   .. method:: rotate
+
+      | :sl:`returns a new matrix with a rotation applied (local frame).`
+      | :sg:`rotate(axis, angle) -> Matrix4x4`
+
+      Returns a new matrix equal to ``self`` post-multiplied by a rotation of
+      ``angle`` degrees about ``axis`` (a :class:`Vector3` or a sequence of
+      three numbers, normalized internally); ``self`` is not modified. In this
+      left-handed convention a positive angle is a **clockwise** rotation when
+      viewed from the ``+axis`` looking toward the origin. A zero-length axis
+      raises a ``ValueError``. Build a standalone rotation with
+      ``Matrix4x4().rotate(axis, angle)``.
+
+      .. ## Matrix4x4.rotate ##
+
+   .. method:: rotate_ip
+
+      | :sl:`applies a rotation in place (local frame).`
+      | :sg:`rotate_ip(axis, angle) -> None`
+
+      In-place form of :meth:`rotate`; mutates ``self`` and returns ``None``.
+
+      .. ## Matrix4x4.rotate_ip ##
+
+   .. method:: scale
+
+      | :sl:`returns a new matrix with a scale applied (local frame).`
+      | :sg:`scale(scalar) -> Matrix4x4`
+      | :sg:`scale(vector3) -> Matrix4x4`
+
+      Returns a new matrix equal to ``self`` post-multiplied by a scale;
+      ``self`` is not modified. A single number produces a uniform scale; a
+      :class:`Vector3` or a sequence of three numbers produces a non-uniform
+      scale along the ``x``, ``y`` and ``z`` axes. Build a standalone scale
+      with ``Matrix4x4().scale(factor)``.
+
+      .. ## Matrix4x4.scale ##
+
+   .. method:: scale_ip
+
+      | :sl:`applies a scale in place (local frame).`
+      | :sg:`scale_ip(scalar) -> None`
+      | :sg:`scale_ip(vector3) -> None`
+
+      In-place form of :meth:`scale`; mutates ``self`` and returns ``None``.
+
+      .. ## Matrix4x4.scale_ip ##
+
+   .. method:: transpose
+
+      | :sl:`returns a new transposed matrix.`
+      | :sg:`transpose() -> Matrix4x4`
+
+      Returns a new matrix that is the transpose of ``self``; ``self`` is not
+      modified.
+
+      .. ## Matrix4x4.transpose ##
+
+   .. method:: transpose_ip
+
+      | :sl:`transposes the matrix in place.`
+      | :sg:`transpose_ip() -> None`
+
+      .. ## Matrix4x4.transpose_ip ##
+
+   .. method:: invert
+
+      | :sl:`returns a new inverse matrix.`
+      | :sg:`invert() -> Matrix4x4`
+
+      Returns a new matrix that is the inverse of ``self``; ``self`` is not
+      modified. A matrix is treated as singular only when its determinant is
+      exactly zero (or the computed inverse is not finite), in which case a
+      ``ValueError`` is raised. A merely ill-conditioned matrix with a very
+      small but non-zero determinant is inverted normally, so legitimately
+      small-scale transforms remain invertible.
+
+      .. ## Matrix4x4.invert ##
+
+   .. method:: invert_ip
+
+      | :sl:`inverts the matrix in place.`
+      | :sg:`invert_ip() -> None`
+
+      Inverts ``self`` in place. A singular matrix raises a ``ValueError`` and
+      leaves ``self`` unchanged.
+
+      .. ## Matrix4x4.invert_ip ##
+
+   .. method:: get_translation
+
+      | :sl:`returns the translation component as a Vector3.`
+      | :sg:`get_translation() -> Vector3`
+
+      Returns ``Vector3(m[0,3], m[1,3], m[2,3])``.
+
+      .. ## Matrix4x4.get_translation ##
+
+   .. method:: get_row
+
+      | :sl:`returns a row as a Vector4.`
+      | :sg:`get_row(index) -> Vector4`
+
+      Returns row ``index`` (``0..3``) as an independent :class:`Vector4`.
+
+      .. ## Matrix4x4.get_row ##
+
+   .. method:: get_column
+
+      | :sl:`returns a column as a Vector4.`
+      | :sg:`get_column(index) -> Vector4`
+
+      Returns column ``index`` (``0..3``) as an independent :class:`Vector4`.
+
+      .. ## Matrix4x4.get_column ##
+
+   .. method:: to_tuple
+
+      | :sl:`returns the 16 elements as a flat tuple.`
+      | :sg:`to_tuple() -> tuple`
+
+      Returns the elements in row-major order.
+
+      .. ## Matrix4x4.to_tuple ##
+
+   .. method:: to_list
+
+      | :sl:`returns the 16 elements as a flat list.`
+      | :sg:`to_list() -> list`
+
+      Returns the elements in row-major order.
+
+      .. ## Matrix4x4.to_list ##
+
+   .. method:: equals
+
+      | :sl:`compares two matrices with an explicit tolerance.`
+      | :sg:`equals(other, tolerance=...) -> bool`
+
+      Returns ``True`` when every element of ``self`` and ``other`` differs by
+      no more than ``tolerance``. ``other`` may be a ``Matrix4x4`` or a
+      sequence of 16 numbers. If ``tolerance`` is omitted, :attr:`epsilon` is
+      used.
+
+      .. ## Matrix4x4.equals ##
+
+   .. method:: copy
+
+      | :sl:`returns a copy of the matrix.`
+      | :sg:`copy() -> Matrix4x4`
+
+      .. ## Matrix4x4.copy ##
+
+   .. ## pygame.math.Matrix4x4 ##
+
 .. ## pygame.math ##

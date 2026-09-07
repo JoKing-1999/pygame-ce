@@ -61,7 +61,7 @@ PG_AUTOIMPORT_CLASSES = {
     "surface": ["Surface", "SurfaceType"],
     "color": ["Color"],
     "pixelarray": ["PixelArray"],
-    "math": ["Vector2", "Vector3", "Vector4"],
+    "math": ["Vector2", "Vector3", "Vector4", "Matrix4x4"],
     "cursors": ["Cursor"],
     "bufferproxy": ["BufferProxy"],
     "mask": ["Mask"],
