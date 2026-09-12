@@ -49,3 +49,4 @@ surface = py.extension_module(
     install: true,
     subdir: pg,
 )
+install_data('surface.pyi', install_dir: pg_dir, install_tag: 'pg-tag')

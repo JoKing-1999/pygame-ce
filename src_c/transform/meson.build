@@ -41,3 +41,4 @@ transform = py.extension_module(
     install: true,
     subdir: pg,
 )
+install_data('transform.pyi', install_dir: pg_dir, install_tag: 'pg-tag')
