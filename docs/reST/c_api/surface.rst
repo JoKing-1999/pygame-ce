@@ -13,6 +13,11 @@ This extension module defines Python type :py:class:`pygame.Surface`.
 
 Header file: src_c/include/pygame.h
 
+.. note::
+
+   The Surface type and functions below are provided by pygame's native
+   Surface core and are available simply by including ``pygame.h``.
+
 
 .. c:type:: pgSurfaceObject
 
@@ -57,3 +62,43 @@ Header file: src_c/include/pygame.h
 
    The C version of the :py:meth:`pygame.Surface.blit` method.
    Return ``0`` on success, ``1`` on an exception.
+
+
+Surface locking
+===============
+
+The following functions implement SDL surface locking for the
+:py:class:`pygame.Surface` type, including subsurface lock propagation. They
+belong to the Surface subsystem (currently implemented in ``src_c/surflock.c``)
+and, like the rest of the Surface C API above, are declared in ``pygame.h``.
+
+.. c:function:: void pgSurface_Prep(pgSurfaceObject *surfobj)
+
+   If *surfobj* is a subsurface, then lock the parent surface with *surfobj*
+   the owner of the lock.
+
+.. c:function:: void pgSurface_Unprep(pgSurfaceObject *surfobj)
+
+   If *surfobj* is a subsurface, then release its lock on the parent surface.
+
+.. c:function:: int pgSurface_Lock(pgSurfaceObject *surfobj)
+
+   Lock pygame surface *surfobj*, with *surfobj* owning its own lock.
+
+.. c:function:: int pgSurface_LockBy(pgSurfaceObject *surfobj, PyObject *lockobj)
+
+   Lock pygame surface *surfobj* with Python object *lockobj* owning
+   the lock.
+
+   The surface will keep a weak reference to object *lockobj*,
+   and eventually remove the lock on itself if *lockobj* is garbage collected.
+   However, it is best if *lockobj* also keep a reference to the locked surface
+   and call to :c:func:`pgSurface_UnlockBy` when finished with the surface.
+
+.. c:function:: int pgSurface_Unlock(pgSurfaceObject *surfobj)
+
+   Remove the pygame surface *surfobj* object's lock on itself.
+
+.. c:function:: int pgSurface_UnlockBy(pgSurfaceObject *surfobj, PyObject *lockobj)
+
+   Remove the lock on pygame surface *surfobj* owned by Python object *lockobj*.

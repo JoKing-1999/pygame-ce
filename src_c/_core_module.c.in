@@ -1,0 +1,12 @@
+#include <Python.h>
+
+#include "pg_export.h"
+
+PG_CORE_API PyObject *
+@core_init@(void);
+
+PyMODINIT_FUNC
+PyInit_@module@(void)
+{
+    return @core_init@();
+}

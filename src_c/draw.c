@@ -4167,10 +4167,6 @@ MODINIT_DEFINE(draw)
     if (PyErr_Occurred()) {
         return NULL;
     }
-    import_pygame_surface();
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
 
     /* create the module */
     return PyModule_Create(&_module);

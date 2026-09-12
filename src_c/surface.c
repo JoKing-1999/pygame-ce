@@ -21,9 +21,9 @@
   pete@shinners.org
 */
 
-#define PYGAMEAPI_SURFACE_INTERNAL
-
 #include "surface.h"
+
+#include "pg_export.h"
 
 #include "palette.h"
 
@@ -62,13 +62,7 @@ typedef struct pg_bufferinternal_s {
     Py_ssize_t mem[6];      /* Enough memory for dim 3 shape and strides  */
 } pg_bufferinternal;
 
-int
-pgSurface_Blit(pgSurfaceObject *dstobj, pgSurfaceObject *srcobj,
-               SDL_Rect *dstrect, SDL_Rect *srcrect, int blend_flags);
-
 /* statics */
-static pgSurfaceObject *
-pgSurface_New2(SDL_Surface *info, int owner);
 static PyObject *
 surf_subtype_new(PyTypeObject *type, SDL_Surface *s, int owner);
 static PyObject *
@@ -321,7 +315,7 @@ static struct PyMethodDef surface_methods[] = {
 
     {NULL, NULL, 0, NULL}};
 
-static PyTypeObject pgSurface_Type = {
+PG_CORE_API PyTypeObject pgSurface_Type = {
     PyVarObject_HEAD_INIT(NULL, 0).tp_name = "pygame.surface.Surface",
     .tp_basicsize = sizeof(pgSurfaceObject),
     .tp_dealloc = surface_dealloc,
@@ -335,16 +329,13 @@ static PyTypeObject pgSurface_Type = {
     .tp_new = surface_new,
 };
 
-#define pgSurface_Check(x) \
-    (PyObject_IsInstance((x), (PyObject *)&pgSurface_Type))
-
-static pgSurfaceObject *
+PG_CORE_API pgSurfaceObject *
 pgSurface_New2(SDL_Surface *s, int owner)
 {
     return (pgSurfaceObject *)surf_subtype_new(&pgSurface_Type, s, owner);
 }
 
-static int
+PG_CORE_API int
 pgSurface_SetSurface(pgSurfaceObject *self, SDL_Surface *s, int owner)
 {
     if (!s) {
@@ -4482,7 +4473,7 @@ end:
 }
 
 /*this internal blit function is accessible through the C api*/
-int
+PG_CORE_API int
 pgSurface_Blit(pgSurfaceObject *dstobj, pgSurfaceObject *srcobj,
                SDL_Rect *dstrect, SDL_Rect *srcrect, int blend_flags)
 {
@@ -4649,18 +4640,12 @@ exec_surface(PyObject *module)
     if (PyErr_Occurred()) {
         return -1;
     }
-    _IMPORT_PYGAME_MODULE(surflock);
-    if (PyErr_Occurred()) {
-        return -1;
-    }
 
     /* type preparation */
     if (PyType_Ready(&pgSurface_Type) < 0) {
         return -1;
     }
 
-    PyObject *apiobj;
-    static void *c_api[PYGAMEAPI_SURFACE_NUMSLOTS];
 #ifndef BUILD_STATIC
     if (pg_warn_simd_at_runtime_but_uncompiled() < 0) {
         return -1;
@@ -4676,16 +4661,6 @@ exec_surface(PyObject *module)
         return -1;
     }
 
-    /* export the c api */
-    c_api[0] = &pgSurface_Type;
-    c_api[1] = pgSurface_New2;
-    c_api[2] = pgSurface_Blit;
-    c_api[3] = pgSurface_SetSurface;
-    apiobj = encapsulate_api(c_api, "surface");
-    if (PyModule_Add(module, PYGAMEAPI_LOCAL_ENTRY, apiobj) < 0) {
-        return -1;
-    }
-
     if (PyModule_AddObjectRef(module, "_dict", pgSurface_Type.tp_dict)) {
         return -1;
     }
@@ -4693,7 +4668,12 @@ exec_surface(PyObject *module)
     return 0;
 }
 
+#if defined(BUILD_STATIC)
 MODINIT_DEFINE(surface)
+#else
+PG_CORE_API PyObject *
+pgSurfaceCore_InitModule(void)
+#endif
 {
 #ifndef BUILD_STATIC
     static PyModuleDef_Slot surf_slots[] = {

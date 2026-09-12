@@ -1971,10 +1971,6 @@ MODINIT_DEFINE(_camera)
     if (PyErr_Occurred()) {
         return NULL;
     }
-    import_pygame_surface();
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
 
     /* create the module */
     module = PyModule_Create(&_module);

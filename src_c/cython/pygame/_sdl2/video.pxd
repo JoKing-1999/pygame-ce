@@ -391,9 +391,7 @@ cdef extern from "pygame.h" nogil:
 
     ctypedef struct pgSurfaceObject
 
-    int pgSurface_Check(object surf)
     SDL_Surface* pgSurface_AsSurface(object surf)
-    void import_pygame_surface()
 
     SDL_Window* pg_GetDefaultWindow()
     void import_pygame_base()
@@ -412,6 +410,7 @@ cdef extern from "pygame.h" nogil:
     object pgColor_NewLength(Uint8 rgba[], Uint8 length)
     void import_pygame_color()
     pgSurfaceObject *pgSurface_New2(SDL_Surface *info, int owner)
+    int pgSurface_Check(object surf)
 
     int pgWindow_Check(object win)
     void import_pygame_window()

@@ -1070,10 +1070,6 @@ MODINIT_DEFINE(gfxdraw)
     if (PyErr_Occurred()) {
         return NULL;
     }
-    import_pygame_surface();
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
 
     return PyModule_Create(&_module);
 }

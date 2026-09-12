@@ -3883,10 +3883,6 @@ MODINIT_DEFINE(display)
     if (PyErr_Occurred()) {
         return NULL;
     }
-    import_pygame_surface();
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
     import_pygame_window();
     if (PyErr_Occurred()) {
         return NULL;

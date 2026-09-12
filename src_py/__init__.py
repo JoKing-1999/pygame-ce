@@ -219,7 +219,6 @@ except (ImportError, OSError):
 
 
 try:
-    import pygame.surflock
     from pygame.surface import Surface, SurfaceType
 except (ImportError, OSError):
 

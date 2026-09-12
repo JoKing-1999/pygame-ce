@@ -25,7 +25,6 @@
 #define PYGAMEAPI_EVENT_INTERNAL
 #define PYGAMEAPI_JOYSTICK_INTERNAL
 #define PYGAMEAPI_BASE_INTERNAL
-#define PYGAMEAPI_SURFACE_INTERNAL
 #define PYGAMEAPI_BUFFERPROXY_INTERNAL
 #define PYGAMEAPI_WINDOW_INTERNAL
 #define PYGAMEAPI_RENDER_INTERNAL
@@ -2279,7 +2278,6 @@ error:
 
 #undef import_pygame_base
 #undef import_pygame_rect
-#undef import_pygame_surface
 #undef import_pygame_geometry
 #undef import_pygame_color
 #undef import_pygame_bufferproxy
@@ -2293,11 +2291,6 @@ import_pygame_base(void)
 
 void
 import_pygame_rect(void)
-{
-}
-
-void
-import_pygame_surface(void)
 {
 }
 
@@ -2385,8 +2378,6 @@ PyMODINIT_FUNC
 PyInit_rect(void);
 PyMODINIT_FUNC
 PyInit_geometry(void);
-PyMODINIT_FUNC
-PyInit_surflock(void);
 PyMODINIT_FUNC
 PyInit_rwobject(void);
 PyMODINIT_FUNC
@@ -2588,9 +2579,8 @@ PyInit_pygame_static()
     load_submodule("pygame", PyInit_geometry(), "geometry");
 
     load_submodule("pygame", PyInit_bufferproxy(), "bufferproxy");
-    load_submodule("pygame", PyInit_surflock(), "surflock");
 
-    // base, color, rect, bufferproxy, surflock
+    // base, color, rect, bufferproxy
     load_submodule("pygame", PyInit_surface(), "surface");
 
     load_submodule("pygame", PyInit_rwobject(), "rwobject");
@@ -2648,13 +2638,6 @@ PyInit_pygame_static()
 #include "rect.c"
 #include "pgcompat_rect.c"
 
-#undef pgSurface_Lock
-#undef pgSurface_Unlock
-#undef pgSurface_LockBy
-#undef pgSurface_UnlockBy
-#undef pgSurface_Prep
-#undef pgSurface_Unprep
-
 #include "surflock.c"
 
 #undef pgColor_New
@@ -2668,11 +2651,6 @@ PyInit_pygame_static()
 #undef pgBufferProxy_New
 
 #include "bufferproxy.c"
-
-#undef pgSurface_Blit
-#undef pgSurface_New
-#undef pgSurface_Type
-#undef pgSurface_SetSurface
 
 #include "surface.c"
 #include "simd_blitters_avx2.c"
@@ -2696,7 +2674,6 @@ PyInit_pygame_static()
 
 #include "rwobject.c"
 
-#define pgSurface_New(surface) (pgSurfaceObject *)pgSurface_New2((surface), 1)
 #include "render.c"
 #include "image.c"
 

@@ -20,6 +20,84 @@ pygame = py.extension_module(
 
 else  # regular build
 
+simd_blitters_avx2 = static_library(
+    'simd_blitters_avx2',
+    'simd_blitters_avx2.c',
+    dependencies: pg_base_deps,
+    c_args: simd_avx2_flags + warnings_error,
+)
+
+simd_blitters_sse2 = static_library(
+    'simd_blitters_sse2',
+    'simd_blitters_sse2.c',
+    dependencies: pg_base_deps,
+    c_args: simd_sse2_neon_flags + warnings_error,
+)
+
+simd_surface_fill_avx2 = static_library(
+    'simd_surface_fill_avx2',
+    'simd_surface_fill_avx2.c',
+    dependencies: pg_base_deps,
+    c_args: simd_avx2_flags + warnings_error,
+)
+
+simd_surface_fill_sse2 = static_library(
+    'simd_surface_fill_sse2',
+    'simd_surface_fill_sse2.c',
+    dependencies: pg_base_deps,
+    c_args: simd_sse2_neon_flags + warnings_error,
+)
+
+pygame_surface_core_kwargs = {
+    'c_args': warnings_error + ['-DPG_CORE_BUILD'],
+    'link_with': [
+        simd_blitters_avx2,
+        simd_blitters_sse2,
+        simd_surface_fill_avx2,
+        simd_surface_fill_sse2,
+    ],
+    'dependencies': pg_base_deps,
+    'install': true,
+    'install_dir': pg_dir,
+}
+if plat != 'win'
+    pygame_surface_core_kwargs += {'override_options': ['b_lundef=false']}
+    if plat == 'mac'
+        pygame_surface_core_kwargs += {'install_rpath': '@loader_path'}
+    else
+        pygame_surface_core_kwargs += {'install_rpath': '$ORIGIN'}
+    endif
+endif
+
+pygame_surface_core = shared_library(
+    'pygame_surface_core',
+    [
+        'surface.c',
+        'surflock.c',
+        'alphablit.c',
+        'surface_fill.c',
+    ],
+    kwargs: pygame_surface_core_kwargs,
+)
+
+pygame_surface_core_dep = declare_dependency(link_with: pygame_surface_core)
+pg_base_deps = pg_base_deps + [pygame_surface_core_dep]
+
+surface_module_c = configure_file(
+    input: '_core_module.c.in',
+    output: 'surface_module.c',
+    configuration: {'module': 'surface', 'core_init': 'pgSurfaceCore_InitModule'},
+)
+
+surface = py.extension_module(
+    'surface',
+    surface_module_c,
+    c_args: warnings_error,
+    dependencies: pg_base_deps,
+    install: true,
+    subdir: pg,
+)
+
 # first the "required" modules
 
 base = py.extension_module(
@@ -97,62 +175,6 @@ rect = py.extension_module(
 rwobject = py.extension_module(
     'rwobject',
     'rwobject.c',
-    c_args: warnings_error,
-    dependencies: pg_base_deps,
-    install: true,
-    subdir: pg,
-)
-
-simd_blitters_avx2 = static_library(
-    'simd_blitters_avx2',
-    'simd_blitters_avx2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_avx2_flags + warnings_error,
-)
-
-simd_blitters_sse2 = static_library(
-    'simd_blitters_sse2',
-    'simd_blitters_sse2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_sse2_neon_flags + warnings_error,
-)
-
-simd_surface_fill_avx2 = static_library(
-    'simd_surface_fill_avx2',
-    'simd_surface_fill_avx2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_avx2_flags + warnings_error,
-)
-
-simd_surface_fill_sse2 = static_library(
-    'simd_surface_fill_sse2',
-    'simd_surface_fill_sse2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_sse2_neon_flags + warnings_error,
-)
-
-surface = py.extension_module(
-    'surface',
-    [
-        'surface.c',
-        'alphablit.c',
-        'surface_fill.c',
-    ],
-    c_args: warnings_error,
-    link_with: [
-        simd_blitters_avx2,
-        simd_blitters_sse2,
-        simd_surface_fill_avx2,
-        simd_surface_fill_sse2,
-    ],
-    dependencies: pg_base_deps,
-    install: true,
-    subdir: pg,
-)
-
-surflock = py.extension_module(
-    'surflock',
-    'surflock.c',
     c_args: warnings_error,
     dependencies: pg_base_deps,
     install: true,

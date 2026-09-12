@@ -2720,10 +2720,6 @@ MODINIT_DEFINE(mask)
     if (PyErr_Occurred()) {
         return NULL;
     }
-    import_pygame_surface();
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
     import_pygame_rect();
     if (PyErr_Occurred()) {
         return NULL;

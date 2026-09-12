@@ -15,7 +15,6 @@ SCALEQUALITY_BEST=SDL_ScaleMode.SDL_ScaleModeBest
 
 import_pygame_base()
 import_pygame_color()
-import_pygame_surface()
 import_pygame_rect()
 import_pygame_window()
 

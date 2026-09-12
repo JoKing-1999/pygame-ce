@@ -692,10 +692,6 @@ MODINIT_DEFINE(mouse)
     if (PyErr_Occurred()) {
         return NULL;
     }
-    import_pygame_surface();
-    if (PyErr_Occurred()) {
-        return NULL;
-    }
     import_pygame_event();
     if (PyErr_Occurred()) {
         return NULL;
