@@ -13,6 +13,7 @@ pygame = py.extension_module(
     'base',
     base_files + cython_files,
     c_args: ['-DBUILD_STATIC=1'],
+    include_directories: 'surface',
     dependencies: pg_base_deps + [sdl_image_dep, sdl_mixer_dep, sdl_ttf_dep, freetype_dep],
     install: true,
     subdir: pg,
@@ -103,52 +104,7 @@ rwobject = py.extension_module(
     subdir: pg,
 )
 
-simd_blitters_avx2 = static_library(
-    'simd_blitters_avx2',
-    'simd_blitters_avx2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_avx2_flags + warnings_error,
-)
-
-simd_blitters_sse2 = static_library(
-    'simd_blitters_sse2',
-    'simd_blitters_sse2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_sse2_neon_flags + warnings_error,
-)
-
-simd_surface_fill_avx2 = static_library(
-    'simd_surface_fill_avx2',
-    'simd_surface_fill_avx2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_avx2_flags + warnings_error,
-)
-
-simd_surface_fill_sse2 = static_library(
-    'simd_surface_fill_sse2',
-    'simd_surface_fill_sse2.c',
-    dependencies: pg_base_deps,
-    c_args: simd_sse2_neon_flags + warnings_error,
-)
-
-surface = py.extension_module(
-    'surface',
-    [
-        'surface.c',
-        'alphablit.c',
-        'surface_fill.c',
-    ],
-    c_args: warnings_error,
-    link_with: [
-        simd_blitters_avx2,
-        simd_blitters_sse2,
-        simd_surface_fill_avx2,
-        simd_surface_fill_sse2,
-    ],
-    dependencies: pg_base_deps,
-    install: true,
-    subdir: pg,
-)
+subdir('surface')
 
 surflock = py.extension_module(
     'surflock',
@@ -257,6 +213,7 @@ bufferproxy = py.extension_module(
 pixelarray = py.extension_module(
     'pixelarray',
     'pixelarray.c',
+    include_directories: 'surface',
     c_args: warnings_error,
     dependencies: pg_base_deps,
     install: true,
@@ -335,6 +292,7 @@ if sdl_api != 3
 gfxdraw = py.extension_module(
     'gfxdraw',
     ['gfxdraw.c', 'SDL_gfx/SDL_gfxPrimitives.c'],
+    include_directories: 'surface',
     # c_args: warnings_error,
     dependencies: pg_base_deps,
     install: true,
